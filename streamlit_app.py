@@ -14,16 +14,12 @@ sp_oauth = SpotifyOAuth(
 )
 
 SONGS = [
-    {"artist": "Lady Gaga", "title": "Poker Face", "year": 2008},
-    {"artist": "Britney Spears", "title": "...Baby One More Time", "year": 1998},
-    {"artist": "ABBA", "title": "Dancing Queen", "year": 1976},
-    {"artist": "Gotye feat. Kimbra", "title": "Somebody That I Used to Know", "year": 2011},
-    {"artist": "The Weeknd", "title": "Blinding Lights", "year": 2019},
-    {"artist": "a-ha", "title": "Take on Me", "year": 1985},
-    {"artist": "Spice Girls", "title": "Wannabe", "year": 1996},
-    {"artist": "Outkast", "title": "Hey Ya!", "year": 2003},
-    {"artist": "Adele", "title": "Rolling in the Deep", "year": 2010},
-    {"artist": "Billie Eilish", "title": "bad guy", "year": 2019},
+    {
+        "artist": "Lady Gaga",
+        "title": "Poker Face",
+        "year": 2008,
+        "spotify_uri": "spotify:track:1QV6tiMFM6fSOKOGLMHYYg",
+    }
 ]
 
 st.set_page_config(
@@ -113,6 +109,16 @@ if st.session_state.current_song is None:
 
             song = random.choice(st.session_state.remaining_songs)
 
+            try:
+                spotify.start_playback(
+                    uris=[song["spotify_uri"]]
+                )
+
+            except Exception as e:
+                st.error("Nem sikerült elindítani a számot.")
+                st.exception(e)
+                st.stop()
+
             st.session_state.current_song = song
             st.session_state.remaining_songs.remove(song)
             st.session_state.revealed = False
@@ -126,7 +132,7 @@ else:
 
     if not st.session_state.revealed:
 
-        st.info("🎶 A szám ki van választva.")
+        st.info("🎶 A szám szól...")
 
         if st.button("👀 MUTASD!", use_container_width=True):
             st.session_state.revealed = True
