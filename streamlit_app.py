@@ -211,10 +211,28 @@ with open("songs.csv", encoding="utf-8-sig") as file:
             "artist": row["artist"],
             "title": row["title"],
             "year": int(row["year"]),
+            "decade": f"{(int(row['year']) // 10) * 10}s",
             "spotify_uri": row["spotify_uri"],
         }
         for row in reader
     ]
+
+
+DECADES = [
+    "1950s",
+    "1960s",
+    "1970s",
+    "1980s",
+    "1990s",
+    "2000s",
+    "2010s",
+    "2020s",
+]
+
+AVAILABLE_BY_DECADE = {
+    decade: sum(1 for song in SONGS if song["decade"] == decade)
+    for decade in DECADES
+}
 
 
 # -------------------------
@@ -264,8 +282,36 @@ def placement_is_correct(timeline, position, year):
     return True
 
 
-def start_new_game(number_of_teams):
-    remaining = SONGS.copy()
+def start_new_game(number_of_teams, decade_counts):
+    selected_songs = []
+
+    for decade in DECADES:
+        wanted = decade_counts.get(decade, 0)
+
+        decade_songs = [
+            song
+            for song in SONGS
+            if song["decade"] == decade
+        ]
+
+        if wanted > 0:
+            selected_songs.extend(
+                random.sample(
+                    decade_songs,
+                    k=wanted,
+                )
+            )
+
+    random.shuffle(selected_songs)
+
+    if len(selected_songs) < number_of_teams:
+        st.error(
+            "Legalább annyi dalt válassz ki összesen, "
+            "ahány csapat játszik."
+        )
+        return False
+
+    remaining = selected_songs.copy()
     teams = []
 
     for team_number in range(1, number_of_teams + 1):
@@ -291,6 +337,9 @@ def start_new_game(number_of_teams):
     st.session_state.revealed = False
     st.session_state.last_result = None
     st.session_state.game_started = True
+    st.session_state.decade_counts = decade_counts
+
+    return True
 
 
 def reset_game():
@@ -302,6 +351,7 @@ def reset_game():
         "selected_position",
         "revealed",
         "last_result",
+        "decade_counts",
     ]
 
     for key in keys_to_delete:
@@ -361,7 +411,8 @@ if not st.session_state.game_started:
     st.header("🎮 Új játék")
 
     st.write(
-        "Válasszátok ki, hány csapat játszik."
+        "Válasszátok ki a csapatok számát és azt, "
+        "hány dalt szeretnétek az egyes évtizedekből."
     )
 
     number_of_teams = st.selectbox(
@@ -370,13 +421,46 @@ if not st.session_state.game_started:
         index=0,
     )
 
+    st.subheader("🎶 Dalok évtizedenként")
+
+    st.caption(
+        "A megadott mennyiséget minden új játék elején "
+        "véletlenszerűen választja ki a teljes dalkészletből."
+    )
+
+    decade_counts = {}
+
+    for decade in DECADES:
+        available = AVAILABLE_BY_DECADE[decade]
+
+        decade_counts[decade] = st.number_input(
+            f"{decade} — elérhető: {available}",
+            min_value=0,
+            max_value=available,
+            value=min(20, available),
+            step=1,
+            key=f"decade_count_{decade}",
+        )
+
+    total_selected = sum(decade_counts.values())
+
+    st.info(
+        f"🎵 Összesen {total_selected} dal kerül a játékba. "
+        f"Ebből {number_of_teams} lesz kezdőkártya."
+    )
+
     if st.button(
         "🎮 JÁTÉK INDÍTÁSA",
         use_container_width=True,
         type="primary",
     ):
-        start_new_game(number_of_teams)
-        st.rerun()
+        started = start_new_game(
+            number_of_teams,
+            decade_counts,
+        )
+
+        if started:
+            st.rerun()
 
     st.stop()
 
