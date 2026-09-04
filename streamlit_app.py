@@ -75,13 +75,14 @@ def start_song(song):
     )
 
 
-def placement_is_correct(timeline, position, year):
-    """
-    Megnézi, hogy a megadott év helyesen kerülne-e
-    a kiválasztott pozícióba.
+def sorted_timeline(timeline):
+    return sorted(
+        timeline,
+        key=lambda song: song["year"]
+    )
 
-    Az azonos évszámok elfogadottak.
-    """
+
+def placement_is_correct(timeline, position, year):
 
     if position > 0:
         left_year = timeline[position - 1]["year"]
@@ -98,60 +99,62 @@ def placement_is_correct(timeline, position, year):
     return True
 
 
-def sorted_timeline(timeline):
-    return sorted(
-        timeline,
-        key=lambda song: song["year"]
-    )
-
-
-# -------------------------
-# Játék inicializálása
-# -------------------------
-
-if "game_initialized" not in st.session_state:
+def start_new_game(number_of_teams):
 
     remaining = SONGS.copy()
 
-    team_1_start = random.choice(remaining)
-    remaining.remove(team_1_start)
+    teams = []
 
-    team_2_start = random.choice(remaining)
-    remaining.remove(team_2_start)
+    for team_number in range(1, number_of_teams + 1):
 
+        start_card = random.choice(remaining)
+        remaining.remove(start_card)
+
+        teams.append(
+            {
+                "name": f"{team_number}. csapat",
+                "timeline": [start_card],
+            }
+        )
+
+    st.session_state.teams = teams
     st.session_state.remaining_songs = remaining
-
-    st.session_state.team_1_timeline = [
-        team_1_start
-    ]
-
-    st.session_state.team_2_timeline = [
-        team_2_start
-    ]
-
-    st.session_state.active_team = 1
+    st.session_state.active_team_index = 0
 
     st.session_state.current_song = None
-
     st.session_state.selected_position = None
-
     st.session_state.revealed = False
-
     st.session_state.last_result = None
 
-    st.session_state.game_initialized = True
+    st.session_state.game_started = True
+
+
+def reset_game():
+
+    keys_to_delete = [
+        "teams",
+        "remaining_songs",
+        "active_team_index",
+        "current_song",
+        "selected_position",
+        "revealed",
+        "last_result",
+    ]
+
+    for key in keys_to_delete:
+
+        if key in st.session_state:
+            del st.session_state[key]
+
+    st.session_state.game_started = False
 
 
 # -------------------------
-# Aktuális csapat
+# Alap állapot
 # -------------------------
 
-active_team = st.session_state.active_team
-
-if active_team == 1:
-    active_timeline = st.session_state.team_1_timeline
-else:
-    active_timeline = st.session_state.team_2_timeline
+if "game_started" not in st.session_state:
+    st.session_state.game_started = False
 
 
 # -------------------------
@@ -164,49 +167,94 @@ st.success("✅ Spotify csatlakoztatva")
 
 
 # -------------------------
-# Csapatok idővonalai
+# Kezdőképernyő
 # -------------------------
 
-st.subheader(
-    f"🔵 1. csapat — "
-    f"{len(st.session_state.team_1_timeline)} pont"
-)
+if not st.session_state.game_started:
 
-team_1_text = "  ·  ".join(
-    str(song["year"])
-    for song in sorted_timeline(
-        st.session_state.team_1_timeline
+    st.header("🎮 Új játék")
+
+    st.write(
+        "Válasszátok ki, hány csapat játszik."
     )
-)
 
-st.write(team_1_text)
-
-
-st.subheader(
-    f"🟠 2. csapat — "
-    f"{len(st.session_state.team_2_timeline)} pont"
-)
-
-team_2_text = "  ·  ".join(
-    str(song["year"])
-    for song in sorted_timeline(
-        st.session_state.team_2_timeline
+    number_of_teams = st.selectbox(
+        "Csapatok száma",
+        options=[2, 3, 4, 5, 6],
+        index=0,
     )
+
+    if st.button(
+        "🎮 JÁTÉK INDÍTÁSA",
+        use_container_width=True,
+        type="primary",
+    ):
+
+        start_new_game(number_of_teams)
+
+        st.rerun()
+
+    st.stop()
+
+
+# -------------------------
+# Játék közbeni fejléc
+# -------------------------
+
+teams = st.session_state.teams
+
+active_team_index = (
+    st.session_state.active_team_index
 )
 
-st.write(team_2_text)
+active_team = teams[active_team_index]
+
+st.caption(
+    f"Hátralévő dalok: "
+    f"{len(st.session_state.remaining_songs)}"
+)
+
+
+# -------------------------
+# Csapatok
+# -------------------------
+
+st.subheader("🏆 Csapatok")
+
+for index, team in enumerate(teams):
+
+    timeline = sorted_timeline(
+        team["timeline"]
+    )
+
+    timeline_text = "  ·  ".join(
+        str(song["year"])
+        for song in timeline
+    )
+
+    if index == active_team_index:
+        marker = "👉 "
+    else:
+        marker = ""
+
+    st.markdown(
+        f"### {marker}{team['name']} "
+        f"— {len(team['timeline'])} pont"
+    )
+
+    st.write(timeline_text)
+
 
 st.divider()
 
 
 # -------------------------
-# Ki következik?
+# Aktuális csapat
 # -------------------------
 
-if active_team == 1:
-    st.header("🔵 1. csapat következik")
-else:
-    st.header("🟠 2. csapat következik")
+st.header(
+    f"🎯 {active_team['name']} következik"
+)
 
 
 # -------------------------
@@ -261,7 +309,6 @@ else:
 
     song = st.session_state.current_song
 
-    # Mindig legyen újraindítás
     if st.button(
         "🔄 ÚJRAINDÍTÁS",
         use_container_width=True,
@@ -289,7 +336,7 @@ else:
         )
 
         timeline = sorted_timeline(
-            active_timeline
+            active_team["timeline"]
         )
 
         st.subheader("Hová kerüljön?")
@@ -312,8 +359,13 @@ else:
 
             else:
 
-                left = timeline[position - 1]["year"]
-                right = timeline[position]["year"]
+                left = (
+                    timeline[position - 1]["year"]
+                )
+
+                right = (
+                    timeline[position]["year"]
+                )
 
                 label = (
                     f"{left}  ➜  🎵  ➜  {right}"
@@ -323,7 +375,6 @@ else:
                 st.session_state.selected_position
                 == position
             ):
-
                 label = "✅ " + label
 
             if st.button(
@@ -339,11 +390,13 @@ else:
                 st.rerun()
 
 
-        if st.session_state.selected_position is not None:
+        if (
+            st.session_state.selected_position
+            is not None
+        ):
 
             st.success(
-                "Hely kiválasztva. "
-                "Most felfedhetitek a számot."
+                "Hely kiválasztva."
             )
 
             if st.button(
@@ -353,7 +406,7 @@ else:
             ):
 
                 timeline = sorted_timeline(
-                    active_timeline
+                    active_team["timeline"]
                 )
 
                 correct = placement_is_correct(
@@ -362,19 +415,17 @@ else:
                     song["year"],
                 )
 
-                st.session_state.last_result = correct
+                st.session_state.last_result = (
+                    correct
+                )
 
                 if correct:
 
-                    if active_team == 1:
-                        st.session_state.team_1_timeline.append(
-                            song
-                        )
-
-                    else:
-                        st.session_state.team_2_timeline.append(
-                            song
-                        )
+                    st.session_state.teams[
+                        active_team_index
+                    ]["timeline"].append(
+                        song
+                    )
 
                 st.session_state.revealed = True
 
@@ -389,15 +440,24 @@ else:
 
         if st.session_state.last_result:
 
-            st.success("🎉 HELYES! +1 pont")
+            st.success(
+                "🎉 HELYES! +1 pont"
+            )
 
         else:
 
-            st.error("❌ Nem talált!")
+            st.error(
+                "❌ Nem talált!"
+            )
 
 
-        st.header(song["title"])
-        st.subheader(song["artist"])
+        st.header(
+            song["title"]
+        )
+
+        st.subheader(
+            song["artist"]
+        )
 
         st.metric(
             "Megjelenés éve",
@@ -405,22 +465,26 @@ else:
         )
 
 
-        # Megmutatjuk, mi volt a tipp
         timeline = sorted_timeline(
-            active_timeline
+            st.session_state.teams[
+                active_team_index
+            ]["timeline"]
         )
 
-        st.subheader("A csapat idővonala")
+        st.subheader(
+            f"{active_team['name']} idővonala"
+        )
 
         timeline_text = "  →  ".join(
             str(item["year"])
             for item in timeline
         )
 
-        st.write(timeline_text)
+        st.write(
+            timeline_text
+        )
 
 
-        # Felfedés után is újra lehessen indítani
         if st.button(
             "🔄 DAL ÚJRAINDÍTÁSA",
             use_container_width=True,
@@ -442,10 +506,11 @@ else:
             type="primary",
         ):
 
-            if st.session_state.active_team == 1:
-                st.session_state.active_team = 2
-            else:
-                st.session_state.active_team = 1
+            st.session_state.active_team_index = (
+                active_team_index + 1
+            ) % len(
+                st.session_state.teams
+            )
 
             st.session_state.current_song = None
             st.session_state.selected_position = None
@@ -453,3 +518,19 @@ else:
             st.session_state.last_result = None
 
             st.rerun()
+
+
+# -------------------------
+# Új játék
+# -------------------------
+
+st.divider()
+
+if st.button(
+    "🔄 ÚJ JÁTÉK",
+    use_container_width=True,
+):
+
+    reset_game()
+
+    st.rerun()
