@@ -62,11 +62,13 @@ token_info = sp_oauth.validate_token(
 )
 
 code = st.query_params.get("code")
+print("CALLBACK CODE:", bool(code), flush=True)
 
 
 if token_info is None and code:
 
     try:
+        print("TOKEN EXCHANGE START", flush=True)
         token_info = sp_oauth.get_access_token(
             code,
             check_cache=False
