@@ -1,8 +1,9 @@
-import streamlit as st
-import random
 import csv
+import random
+
 import spotipy
-from spotipy.oauth2 import SpotifyOAuth, CacheFileHandler
+import streamlit as st
+from spotipy.oauth2 import SpotifyOAuth
 
 
 st.set_page_config(
@@ -20,23 +21,34 @@ SPOTIFY_SCOPE = (
     "user-modify-playback-state"
 )
 
-cache_handler = CacheFileHandler(
-    cache_path=".spotify_cache"
-)
-
 sp_oauth = SpotifyOAuth(
     client_id=st.secrets["SPOTIFY_CLIENT_ID"],
     client_secret=st.secrets["SPOTIFY_CLIENT_SECRET"],
     redirect_uri=st.secrets["SPOTIFY_REDIRECT_URI"],
     scope=SPOTIFY_SCOPE,
-    cache_handler=cache_handler,
-    requests_timeout=10,
+    cache_path=None,
     open_browser=False,
+    requests_timeout=10,
 )
+
+try:
+    token_info = sp_oauth.refresh_access_token(
+        st.secrets["SPOTIFY_REFRESH_TOKEN"]
+    )
+
+    spotify = spotipy.Spotify(
+        auth=token_info["access_token"],
+        requests_timeout=10,
+    )
+
+except Exception as e:
+    st.error("Nem sikerült kapcsolódni a Spotifyhoz.")
+    st.exception(e)
+    st.stop()
 
 
 # -------------------------
-# Dalok
+# Dalok betöltése
 # -------------------------
 
 with open("songs.csv", encoding="utf-8-sig") as file:
@@ -51,55 +63,6 @@ with open("songs.csv", encoding="utf-8-sig") as file:
         }
         for row in reader
     ]
-
-
-# -------------------------
-# Spotify bejelentkezés
-# -------------------------
-
-token_info = sp_oauth.validate_token(
-    cache_handler.get_cached_token()
-)
-
-code = st.query_params.get("code")
-print("CALLBACK CODE:", bool(code), flush=True)
-
-
-if token_info is None and code:
-
-    try:
-        print("TOKEN EXCHANGE START", flush=True)
-        token_info = sp_oauth.get_access_token(
-            code,
-            check_cache=False
-        )
-
-    except Exception as e:
-        st.error("Nem sikerült a Spotify bejelentkezés.")
-        st.exception(e)
-        st.stop()
-
-
-if token_info is None:
-
-    auth_url = sp_oauth.get_authorize_url()
-
-    st.title("🎵 Homemade Hitster")
-    st.write("Először csatlakoztasd a Spotify-fiókodat.")
-
-    st.link_button(
-        "🟢 Belépés Spotifyba",
-        auth_url,
-        use_container_width=True
-    )
-
-    st.stop()
-
-
-spotify = spotipy.Spotify(
-    auth_manager=sp_oauth,
-    requests_timeout=10,
-)
 
 
 # -------------------------
@@ -126,13 +89,11 @@ try:
     devices = spotify.devices()
 
     if devices["devices"]:
-
         for device in devices["devices"]:
             st.write(
                 f"🎧 {device['name']} "
                 f"({'aktív' if device['is_active'] else 'nem aktív'})"
             )
-
     else:
         st.warning(
             "Nem látok Spotify-eszközt. "
@@ -165,7 +126,7 @@ if st.session_state.current_song is None:
 
         if st.button(
             "🎵 ÚJ SZÁM",
-            use_container_width=True
+            use_container_width=True,
         ):
 
             song = random.choice(
@@ -185,17 +146,12 @@ if st.session_state.current_song is None:
                 st.stop()
 
             st.session_state.current_song = song
-
-            st.session_state.remaining_songs.remove(
-                song
-            )
-
+            st.session_state.remaining_songs.remove(song)
             st.session_state.revealed = False
 
             st.rerun()
 
     else:
-
         st.success("Elfogytak a számok! 🎉")
 
 
@@ -207,11 +163,10 @@ else:
 
         if st.button(
             "👀 MUTASD!",
-            use_container_width=True
+            use_container_width=True,
         ):
 
             st.session_state.revealed = True
-
             st.rerun()
 
     else:
@@ -223,12 +178,12 @@ else:
 
         st.metric(
             "Megjelenés éve",
-            song["year"]
+            song["year"],
         )
 
         if st.button(
             "➡️ KÖVETKEZŐ",
-            use_container_width=True
+            use_container_width=True,
         ):
 
             st.session_state.current_song = None
