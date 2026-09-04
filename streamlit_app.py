@@ -78,6 +78,27 @@ spotify = spotipy.Spotify(
     auth=st.session_state.spotify_token_info["access_token"]
 )
 
+# Spotify eszközök tesztelése
+st.subheader("Spotify kapcsolat teszt")
+
+try:
+    devices = spotify.devices()
+
+    if devices["devices"]:
+        st.success("✅ Spotify kapcsolat működik!")
+
+        for device in devices["devices"]:
+            st.write(
+                f"🎧 {device['name']} "
+                f"({'aktív' if device['is_active'] else 'nem aktív'})"
+            )
+    else:
+        st.warning("Nem látok aktív Spotify-eszközt.")
+
+except Exception as e:
+    st.error("Nem sikerült lekérni a Spotify-eszközöket.")
+    st.exception(e)
+
 st.title("🎵 Homemade Hitster")
 
 played = len(SONGS) - len(st.session_state.remaining_songs)
