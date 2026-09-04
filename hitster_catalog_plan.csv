@@ -1,0 +1,33 @@
+﻿decade,style,target_count,spotify_genre_query
+1950s,Pop,30,pop
+1950s,Rock & Roll,30,rock
+1950s,Soul / R&B,25,r&b
+1950s,Country / Folk,15,country
+1960s,Pop,35,pop
+1960s,Rock,40,rock
+1960s,Soul / R&B,30,soul
+1960s,Country / Folk,15,country
+1970s,Pop,30,pop
+1970s,Rock,40,rock
+1970s,Disco / Funk,35,disco
+1970s,Soul / R&B,25,soul
+1980s,Pop,35,pop
+1980s,Rock,40,rock
+1980s,Dance / Electronic,30,dance
+1980s,Soul / R&B,20,r&b
+1990s,Pop,35,pop
+1990s,Rock / Alternative,35,alternative
+1990s,Dance / Electronic,35,dance
+1990s,Hip-hop / R&B,30,hip-hop
+2000s,Pop,35,pop
+2000s,Rock / Alternative,35,alternative
+2000s,Dance / Electronic,30,dance
+2000s,Hip-hop / R&B,35,hip-hop
+2010s,Pop,40,pop
+2010s,Rock / Alternative,25,alternative
+2010s,Dance / Electronic,35,dance
+2010s,Hip-hop / R&B,35,hip-hop
+2020s,Pop,30,pop
+2020s,Rock / Alternative,20,alternative
+2020s,Dance / Electronic,25,dance
+2020s,Hip-hop / R&B,25,hip-hop

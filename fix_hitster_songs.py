@@ -1,0 +1,224 @@
+import csv
+import random
+
+import spotipy
+import streamlit as st
+from spotipy.oauth2 import SpotifyOAuth
+
+
+st.set_page_config(
+    page_title="Homemade Hitster",
+    page_icon="🎵",
+)
+
+
+# -------------------------
+# Spotify
+# -------------------------
+
+SPOTIFY_SCOPE = (
+    "user-read-playback-state "
+    "user-modify-playback-state"
+)
+
+sp_oauth = SpotifyOAuth(
+    client_id=st.secrets["SPOTIFY_CLIENT_ID"],
+    client_secret=st.secrets["SPOTIFY_CLIENT_SECRET"],
+    redirect_uri=st.secrets["SPOTIFY_REDIRECT_URI"],
+    scope=SPOTIFY_SCOPE,
+    cache_path=None,
+    open_browser=False,
+    requests_timeout=10,
+)
+
+try:
+    token_info = sp_oauth.refresh_access_token(
+        st.secrets["SPOTIFY_REFRESH_TOKEN"]
+    )
+
+    spotify = spotipy.Spotify(
+        auth=token_info["access_token"],
+        requests_timeout=10,
+    )
+
+except Exception as e:
+    st.error("Nem sikerült kapcsolódni a Spotifyhoz.")
+    st.exception(e)
+    st.stop()
+
+
+# -------------------------
+# Dalok betöltése
+# -------------------------
+
+with open("songs.csv", encoding="utf-8-sig") as file:
+    reader = csv.DictReader(file)
+
+    SONGS = [
+        {
+            "artist": row["artist"],
+            "title": row["title"],
+            "year": int(row["year"]),
+            "spotify_uri": row["spotify_uri"],
+        }
+        for row in reader
+    ]
+
+
+# -------------------------
+# Játék állapota
+# -------------------------
+
+if "remaining_songs" not in st.session_state:
+    st.session_state.remaining_songs = SONGS.copy()
+
+if "current_song" not in st.session_state:
+    st.session_state.current_song = None
+
+if "revealed" not in st.session_state:
+    st.session_state.revealed = False
+
+
+# -------------------------
+# Spotify kapcsolat
+# -------------------------
+
+st.success("✅ Spotify csatlakoztatva")
+
+try:
+    devices = spotify.devices()
+
+    if devices["devices"]:
+        for device in devices["devices"]:
+            st.write(
+                f"🎧 {device['name']} "
+                f"({'aktív' if device['is_active'] else 'nem aktív'})"
+            )
+    else:
+        st.warning(
+            "Nem látok Spotify-eszközt. "
+            "Nyisd meg a Spotifyt valamelyik eszközödön."
+        )
+
+except Exception as e:
+    st.error("Nem sikerült lekérni a Spotify-eszközöket.")
+    st.exception(e)
+
+
+# -------------------------
+# Játék
+# -------------------------
+
+st.title("🎵 Homemade Hitster")
+
+played = len(SONGS) - len(
+    st.session_state.remaining_songs
+)
+
+st.write(
+    f"Lejátszott számok: **{played} / {len(SONGS)}**"
+)
+
+
+if st.session_state.current_song is None:
+
+    if st.session_state.remaining_songs:
+
+        if st.button(
+            "🎵 ÚJ SZÁM",
+            use_container_width=True,
+        ):
+
+            song = random.choice(
+                st.session_state.remaining_songs
+            )
+
+            try:
+                spotify.start_playback(
+                    uris=[song["spotify_uri"]]
+                )
+
+            except Exception as e:
+                st.error(
+                    "Nem sikerült elindítani a számot."
+                )
+                st.exception(e)
+                st.stop()
+
+            st.session_state.current_song = song
+            st.session_state.remaining_songs.remove(song)
+            st.session_state.revealed = False
+
+            st.rerun()
+
+    else:
+        st.success("Elfogytak a számok! 🎉")
+
+
+else:
+
+    song = st.session_state.current_song
+
+    if not st.session_state.revealed:
+
+        st.info("🎶 A szám szól...")
+
+        if st.button(
+            "🔄 ÚJRAINDÍTÁS",
+            use_container_width=True,
+        ):
+
+            try:
+                spotify.start_playback(
+                    uris=[song["spotify_uri"]]
+                )
+
+            except Exception as e:
+                st.error(
+                    "Nem sikerült újraindítani a számot."
+                )
+                st.exception(e)
+
+        if st.button(
+            "👀 MUTASD!",
+            use_container_width=True,
+        ):
+
+            st.session_state.revealed = True
+            st.rerun()
+
+    else:
+
+        st.header(song["title"])
+        st.subheader(song["artist"])
+
+        st.metric(
+            "Megjelenés éve",
+            song["year"],
+        )
+
+        if st.button(
+            "🔄 ÚJRAINDÍTÁS",
+            use_container_width=True,
+        ):
+
+            try:
+                spotify.start_playback(
+                    uris=[song["spotify_uri"]]
+                )
+
+            except Exception as e:
+                st.error(
+                    "Nem sikerült újraindítani a számot."
+                )
+                st.exception(e)
+
+        if st.button(
+            "➡️ KÖVETKEZŐ",
+            use_container_width=True,
+        ):
+
+            st.session_state.current_song = None
+            st.session_state.revealed = False
+
+            st.rerun()
