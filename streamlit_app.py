@@ -41,20 +41,26 @@ if "revealed" not in st.session_state:
     st.session_state.revealed = False
 
 # Spotify bejelentkezés
-if "spotify_token" not in st.session_state:
-    st.session_state.spotify_token = None
+if "spotify_token_info" not in st.session_state:
+    st.session_state.spotify_token_info = None
 
 code = st.query_params.get("code")
 
-if code and not st.session_state.spotify_token:
-    token_info = sp_oauth.get_access_token(code, check_cache=False)
-    st.session_state.spotify_token = token_info["access_token"]
+if code and st.session_state.spotify_token_info is None:
+    try:
+        token_info = sp_oauth.get_access_token(
+            code,
+            check_cache=False
+        )
 
-    # eltüntetjük a ?code=... részt az URL-ből
-    st.query_params.clear()
-    st.rerun()
+        st.session_state.spotify_token_info = token_info
 
-if not st.session_state.spotify_token:
+    except Exception as e:
+        st.error("Nem sikerült a Spotify bejelentkezés.")
+        st.exception(e)
+        st.stop()
+
+if st.session_state.spotify_token_info is None:
     auth_url = sp_oauth.get_authorize_url()
 
     st.title("🎵 Homemade Hitster")
@@ -67,6 +73,10 @@ if not st.session_state.spotify_token:
     )
 
     st.stop()
+
+spotify = spotipy.Spotify(
+    auth=st.session_state.spotify_token_info["access_token"]
+)
 
 st.title("🎵 Homemade Hitster")
 
