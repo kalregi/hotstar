@@ -1,14 +1,12 @@
+import csv
 import random
 import secrets
 import string
 
-from supabase import create_client
-
 import spotipy
 import streamlit as st
 from spotipy.oauth2 import SpotifyOAuth
-
-
+from supabase import create_client
 st.set_page_config(
     page_title="Homemade Hitster",
     page_icon="🎵",
