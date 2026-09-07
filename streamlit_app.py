@@ -370,90 +370,176 @@ sp_oauth = SpotifyOAuth(
 def spotify_token_is_expired(token_info):
     if not token_info:
         return True
-
     expires_at = token_info.get("expires_at")
-
     if expires_at is None:
         return True
-
     return expires_at <= int(datetime.now(timezone.utc).timestamp()) + 60
 
 
-def get_spotify_client():
-    token_info = st.session_state.get("spotify_token_info")
-
-    if not token_info:
+def get_spotify_auth_session(session_key):
+    if not session_key:
         return None
-
-    if spotify_token_is_expired(token_info):
-        refresh_token = token_info.get("refresh_token")
-
-        if not refresh_token:
-            st.session_state.pop("spotify_token_info", None)
-            st.session_state.pop("spotify_user_name", None)
-            return None
-
-        try:
-            refreshed = sp_oauth.refresh_access_token(refresh_token)
-
-            # Spotify may omit a new refresh token. Keep the old one then.
-            if not refreshed.get("refresh_token"):
-                refreshed["refresh_token"] = refresh_token
-
-            st.session_state.spotify_token_info = refreshed
-            token_info = refreshed
-
-        except Exception:
-            st.session_state.pop("spotify_token_info", None)
-            st.session_state.pop("spotify_user_name", None)
-            return None
-
-    return spotipy.Spotify(
-        auth=token_info["access_token"],
-        requests_timeout=10,
+    result = (
+        supabase.table("spotify_auth_sessions")
+        .select("*")
+        .eq("session_key", session_key)
+        .execute()
+        .data
     )
+    return result[0] if result else None
+
+
+def save_spotify_auth_session(session_key, **fields):
+    (
+        supabase.table("spotify_auth_sessions")
+        .update(fields)
+        .eq("session_key", session_key)
+        .execute()
+    )
+
+
+def create_spotify_login():
+    session_key = secrets.token_urlsafe(32)
+    supabase.table("spotify_auth_sessions").insert(
+        {
+            "session_key": session_key,
+            "created_at": utc_now_iso(),
+            "updated_at": utc_now_iso(),
+        }
+    ).execute()
+    return sp_oauth.get_authorize_url(state=session_key)
+
+
+def token_info_from_auth_row(row):
+    if not row or not row.get("access_token"):
+        return None
+    return {
+        "access_token": row["access_token"],
+        "refresh_token": row.get("refresh_token"),
+        "expires_at": row.get("expires_at"),
+        "scope": row.get("scope"),
+        "token_type": "Bearer",
+    }
+
+
+def restore_spotify_from_session_key(session_key):
+    row = get_spotify_auth_session(session_key)
+    if not row or not row.get("access_token"):
+        return False
+    st.session_state.spotify_session_key = session_key
+    st.session_state.spotify_token_info = token_info_from_auth_row(row)
+    st.session_state.spotify_user_name = (
+        row.get("spotify_user_name") or "Spotify-felhasználó"
+    )
+    return True
 
 
 def handle_spotify_callback():
     code = st.query_params.get("code")
+    state = st.query_params.get("state")
     error = st.query_params.get("error")
+    session_key = st.query_params.get("spotify_session")
+
+    if session_key and not code:
+        restore_spotify_from_session_key(session_key)
+        return
 
     if error:
-        st.query_params.clear()
         st.error("A Spotify-bejelentkezés nem sikerült.")
         return
 
-    if not code:
+    if not code or not state:
+        return
+
+    auth_row = get_spotify_auth_session(state)
+
+    if auth_row is None:
+        st.error(
+            "A Spotify-bejelentkezés munkamenete nem található. "
+            "Indítsd el újra a bejelentkezést."
+        )
+        return
+
+    if auth_row.get("access_token"):
+        restore_spotify_from_session_key(state)
+        st.query_params.clear()
+        st.query_params["spotify_session"] = state
         return
 
     try:
-        token_info = sp_oauth.get_access_token(
-            code,
-            check_cache=False,
-        )
-
-        st.session_state.spotify_token_info = token_info
+        token_info = sp_oauth.get_access_token(code, check_cache=False)
 
         client = spotipy.Spotify(
             auth=token_info["access_token"],
             requests_timeout=10,
         )
         profile = client.current_user()
-        st.session_state.spotify_user_name = (
+        user_name = (
             profile.get("display_name")
             or profile.get("id")
             or "Spotify-felhasználó"
         )
 
+        save_spotify_auth_session(
+            state,
+            access_token=token_info["access_token"],
+            refresh_token=token_info.get("refresh_token"),
+            expires_at=token_info.get("expires_at"),
+            scope=token_info.get("scope"),
+            spotify_user_name=user_name,
+            updated_at=utc_now_iso(),
+        )
+
+        st.session_state.spotify_session_key = state
+        st.session_state.spotify_token_info = token_info
+        st.session_state.spotify_user_name = user_name
+
         st.query_params.clear()
-        st.rerun()
+        st.query_params["spotify_session"] = state
 
     except Exception:
-        st.query_params.clear()
         st.error(
             "Nem sikerült befejezni a Spotify-bejelentkezést. "
             "Próbáld meg újra."
         )
+
+
+def get_spotify_client():
+    token_info = st.session_state.get("spotify_token_info")
+    session_key = st.session_state.get("spotify_session_key")
+
+    if not token_info:
+        return None
+
+    if spotify_token_is_expired(token_info):
+        refresh_token = token_info.get("refresh_token")
+        if not refresh_token:
+            return None
+
+        try:
+            refreshed = sp_oauth.refresh_access_token(refresh_token)
+            if not refreshed.get("refresh_token"):
+                refreshed["refresh_token"] = refresh_token
+
+            st.session_state.spotify_token_info = refreshed
+            token_info = refreshed
+
+            if session_key:
+                save_spotify_auth_session(
+                    session_key,
+                    access_token=refreshed["access_token"],
+                    refresh_token=refreshed.get("refresh_token"),
+                    expires_at=refreshed.get("expires_at"),
+                    scope=refreshed.get("scope"),
+                    updated_at=utc_now_iso(),
+                )
+        except Exception:
+            return None
+
+    return spotipy.Spotify(
+        auth=token_info["access_token"],
+        requests_timeout=10,
+    )
 
 
 handle_spotify_callback()
@@ -695,13 +781,31 @@ if spotify is None:
         "A játék használatához jelentkezz be a saját Spotify-fiókoddal."
     )
 
-    login_url = sp_oauth.get_authorize_url()
+    if "spotify_login_url" not in st.session_state:
+        st.session_state.spotify_login_url = create_spotify_login()
 
-    st.link_button(
-        "🎧 BELÉPÉS SPOTIFY-JAL",
-        login_url,
-        use_container_width=True,
-        type="primary",
+    login_url = st.session_state.spotify_login_url
+
+    st.markdown(
+        f"""
+        <a href="{login_url}" target="_self"
+           style="
+               display:block;
+               width:100%;
+               box-sizing:border-box;
+               text-align:center;
+               padding:0.85rem 1rem;
+               border-radius:0.5rem;
+               text-decoration:none;
+               font-weight:700;
+               background:#1DB954;
+               color:white;
+               margin-top:0.5rem;
+           ">
+            🎧 BELÉPÉS SPOTIFY-JAL
+        </a>
+        """,
+        unsafe_allow_html=True,
     )
 
     st.stop()
