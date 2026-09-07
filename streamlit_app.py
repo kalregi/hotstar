@@ -32,7 +32,7 @@ def generate_game_code():
     for _ in range(20):
         code = "".join(
             secrets.choice(alphabet)
-            for _ in range(4)
+            for _ in range(6)
         )
 
         existing = (
@@ -366,20 +366,98 @@ sp_oauth = SpotifyOAuth(
     requests_timeout=10,
 )
 
-try:
-    token_info = sp_oauth.refresh_access_token(
-        st.secrets["SPOTIFY_REFRESH_TOKEN"]
-    )
 
-    spotify = spotipy.Spotify(
+def spotify_token_is_expired(token_info):
+    if not token_info:
+        return True
+
+    expires_at = token_info.get("expires_at")
+
+    if expires_at is None:
+        return True
+
+    return expires_at <= int(datetime.now(timezone.utc).timestamp()) + 60
+
+
+def get_spotify_client():
+    token_info = st.session_state.get("spotify_token_info")
+
+    if not token_info:
+        return None
+
+    if spotify_token_is_expired(token_info):
+        refresh_token = token_info.get("refresh_token")
+
+        if not refresh_token:
+            st.session_state.pop("spotify_token_info", None)
+            st.session_state.pop("spotify_user_name", None)
+            return None
+
+        try:
+            refreshed = sp_oauth.refresh_access_token(refresh_token)
+
+            # Spotify may omit a new refresh token. Keep the old one then.
+            if not refreshed.get("refresh_token"):
+                refreshed["refresh_token"] = refresh_token
+
+            st.session_state.spotify_token_info = refreshed
+            token_info = refreshed
+
+        except Exception:
+            st.session_state.pop("spotify_token_info", None)
+            st.session_state.pop("spotify_user_name", None)
+            return None
+
+    return spotipy.Spotify(
         auth=token_info["access_token"],
         requests_timeout=10,
     )
 
-except Exception as e:
-    st.error("Nem sikerült kapcsolódni a Spotifyhoz.")
-    st.exception(e)
-    st.stop()
+
+def handle_spotify_callback():
+    code = st.query_params.get("code")
+    error = st.query_params.get("error")
+
+    if error:
+        st.query_params.clear()
+        st.error("A Spotify-bejelentkezés nem sikerült.")
+        return
+
+    if not code:
+        return
+
+    try:
+        token_info = sp_oauth.get_access_token(
+            code,
+            check_cache=False,
+        )
+
+        st.session_state.spotify_token_info = token_info
+
+        client = spotipy.Spotify(
+            auth=token_info["access_token"],
+            requests_timeout=10,
+        )
+        profile = client.current_user()
+        st.session_state.spotify_user_name = (
+            profile.get("display_name")
+            or profile.get("id")
+            or "Spotify-felhasználó"
+        )
+
+        st.query_params.clear()
+        st.rerun()
+
+    except Exception:
+        st.query_params.clear()
+        st.error(
+            "Nem sikerült befejezni a Spotify-bejelentkezést. "
+            "Próbáld meg újra."
+        )
+
+
+handle_spotify_callback()
+spotify = get_spotify_client()
 
 
 # -------------------------
@@ -611,7 +689,26 @@ if "device_id" not in st.session_state:
 # -------------------------
 
 st.title("🎵 Homemade Hitster")
-st.caption("✅ Spotify csatlakoztatva")
+
+if spotify is None:
+    st.info(
+        "A játék használatához jelentkezz be a saját Spotify-fiókoddal."
+    )
+
+    login_url = sp_oauth.get_authorize_url()
+
+    st.link_button(
+        "🎧 BELÉPÉS SPOTIFY-JAL",
+        login_url,
+        use_container_width=True,
+        type="primary",
+    )
+
+    st.stop()
+
+st.caption(
+    f"✅ Spotify: {st.session_state.get('spotify_user_name', 'csatlakoztatva')}"
+)
 
 
 # -------------------------
@@ -699,21 +796,21 @@ if not st.session_state.game_started:
 
         st.write(
             "Írd be a fő játékos telefonján megjelenő "
-            "4 karakteres játékkódot."
+            "6 karakteres játékkódot."
         )
 
         join_code = st.text_input(
             "Játékkód",
-            max_chars=4,
-            placeholder="pl. K7F3",
+            max_chars=6,
+            placeholder="pl. K7F3Q9",
         ).strip().upper()
 
         if st.button(
             "📱 CSATLAKOZÁS",
             use_container_width=True,
         ):
-            if len(join_code) != 4:
-                st.error("Adj meg egy 4 karakteres játékkódot.")
+            if len(join_code) != 6:
+                st.error("Adj meg egy 6 karakteres játékkódot.")
 
             else:
                 try:
