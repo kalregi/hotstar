@@ -1,5 +1,8 @@
-import csv
 import random
+import secrets
+import string
+
+from supabase import create_client
 
 import spotipy
 import streamlit as st
@@ -11,6 +14,81 @@ st.set_page_config(
     page_icon="🎵",
     layout="centered",
 )
+
+
+# -------------------------
+# Supabase
+# -------------------------
+
+supabase = create_client(
+    st.secrets["SUPABASE_URL"],
+    st.secrets["SUPABASE_KEY"],
+)
+
+
+def generate_game_code():
+    alphabet = string.ascii_uppercase + string.digits
+
+    for _ in range(20):
+        code = "".join(secrets.choice(alphabet) for _ in range(4))
+
+        existing = (
+            supabase.table("games")
+            .select("game_code")
+            .eq("game_code", code)
+            .execute()
+            .data
+        )
+
+        if not existing:
+            return code
+
+    raise RuntimeError("Nem sikerült egyedi játékkódot létrehozni.")
+
+
+def create_shared_game(game_code):
+    game_data = {
+        "game_code": game_code,
+        "number_of_teams": len(st.session_state.teams),
+        "teams": st.session_state.teams,
+        "remaining_songs": st.session_state.remaining_songs,
+        "active_team_index": st.session_state.active_team_index,
+        "current_song": st.session_state.current_song,
+        "selected_position": st.session_state.selected_position,
+        "revealed": st.session_state.revealed,
+        "last_result": st.session_state.last_result,
+        "game_status": "playing",
+    }
+
+    supabase.table("games").insert(game_data).execute()
+
+
+def load_shared_game(game_code):
+    result = (
+        supabase.table("games")
+        .select("*")
+        .eq("game_code", game_code)
+        .execute()
+        .data
+    )
+
+    if not result:
+        return False
+
+    game = result[0]
+
+    st.session_state.teams = game["teams"]
+    st.session_state.remaining_songs = game["remaining_songs"]
+    st.session_state.active_team_index = game["active_team_index"]
+    st.session_state.current_song = game["current_song"]
+    st.session_state.selected_position = game["selected_position"]
+    st.session_state.revealed = game["revealed"]
+    st.session_state.last_result = game["last_result"]
+    st.session_state.game_started = True
+    st.session_state.game_code = game_code
+    st.session_state.is_host = False
+
+    return True
 
 
 # -------------------------
@@ -363,6 +441,8 @@ def reset_game():
         "revealed",
         "last_result",
         "decade_counts",
+        "game_code",
+        "is_host",
     ]
 
     for key in keys_to_delete:
@@ -419,62 +499,116 @@ st.caption("✅ Spotify csatlakoztatva")
 # -------------------------
 
 if not st.session_state.game_started:
-    st.header("🎮 Új játék")
-
-    st.write(
-        "Válasszátok ki a csapatok számát és azt, "
-        "hány dalt szeretnétek az egyes évtizedekből."
+    create_tab, join_tab = st.tabs(
+        ["🎮 ÚJ JÁTÉK", "📱 CSATLAKOZÁS"]
     )
 
-    number_of_teams = st.selectbox(
-        "Csapatok száma",
-        options=[2, 3, 4, 5, 6],
-        index=0,
-    )
+    with create_tab:
+        st.header("🎮 Új játék")
 
-    st.subheader("🎶 Dalok évtizedenként")
-
-    st.caption(
-        "A megadott mennyiséget minden új játék elején "
-        "véletlenszerűen választja ki a teljes dalkészletből."
-    )
-
-    decade_counts = {}
-
-    for decade in DECADES:
-        available = AVAILABLE_BY_DECADE[decade]
-
-        decade_counts[decade] = st.slider(
-            f"{decade} — elérhető: {available}",
-            min_value=0,
-            max_value=available,
-            value=min(
-                DEFAULT_DECADE_COUNTS[decade],
-                available,
-            ),
-            step=1,
-            key=f"decade_count_{decade}",
+        st.write(
+            "Válasszátok ki a csapatok számát és azt, "
+            "hány dalt szeretnétek az egyes évtizedekből."
         )
 
-    total_selected = sum(decade_counts.values())
-
-    st.info(
-        f"🎵 Összesen {total_selected} dal kerül a játékba. "
-        f"Ebből {number_of_teams} lesz kezdőkártya."
-    )
-
-    if st.button(
-        "🎮 JÁTÉK INDÍTÁSA",
-        use_container_width=True,
-        type="primary",
-    ):
-        started = start_new_game(
-            number_of_teams,
-            decade_counts,
+        number_of_teams = st.selectbox(
+            "Csapatok száma",
+            options=[2, 3, 4, 5, 6],
+            index=0,
         )
 
-        if started:
-            st.rerun()
+        st.subheader("🎶 Dalok évtizedenként")
+
+        st.caption(
+            "A megadott mennyiséget minden új játék elején "
+            "véletlenszerűen választja ki a teljes dalkészletből."
+        )
+
+        decade_counts = {}
+
+        for decade in DECADES:
+            available = AVAILABLE_BY_DECADE[decade]
+
+            decade_counts[decade] = st.slider(
+                f"{decade} — elérhető: {available}",
+                min_value=0,
+                max_value=available,
+                value=min(
+                    DEFAULT_DECADE_COUNTS[decade],
+                    available,
+                ),
+                step=1,
+                key=f"decade_count_{decade}",
+            )
+
+        total_selected = sum(decade_counts.values())
+
+        st.info(
+            f"🎵 Összesen {total_selected} dal kerül a játékba. "
+            f"Ebből {number_of_teams} lesz kezdőkártya."
+        )
+
+        if st.button(
+            "🎮 JÁTÉK LÉTREHOZÁSA",
+            use_container_width=True,
+            type="primary",
+        ):
+            started = start_new_game(
+                number_of_teams,
+                decade_counts,
+            )
+
+            if started:
+                try:
+                    game_code = generate_game_code()
+                    create_shared_game(game_code)
+
+                    st.session_state.game_code = game_code
+                    st.session_state.is_host = True
+                    st.rerun()
+
+                except Exception as e:
+                    reset_game()
+                    st.error(
+                        "Nem sikerült létrehozni a közös játékot."
+                    )
+                    st.exception(e)
+
+    with join_tab:
+        st.header("📱 Csatlakozás játékhoz")
+
+        st.write(
+            "Írd be a fő játékos telefonján megjelenő "
+            "4 karakteres játékkódot."
+        )
+
+        join_code = st.text_input(
+            "Játékkód",
+            max_chars=4,
+            placeholder="pl. K7F3",
+        ).strip().upper()
+
+        if st.button(
+            "📱 CSATLAKOZÁS",
+            use_container_width=True,
+        ):
+            if len(join_code) != 4:
+                st.error("Adj meg egy 4 karakteres játékkódot.")
+
+            else:
+                try:
+                    if load_shared_game(join_code):
+                        st.rerun()
+                    else:
+                        st.error(
+                            "Nem található ilyen játékkód."
+                        )
+
+                except Exception as e:
+                    st.error(
+                        "Nem sikerült csatlakozni a játékhoz."
+                    )
+                    st.exception(e)
 
     st.stop()
 
@@ -486,6 +620,12 @@ if not st.session_state.game_started:
 teams = st.session_state.teams
 active_team_index = st.session_state.active_team_index
 active_team = teams[active_team_index]
+
+
+if "game_code" in st.session_state:
+    st.info(
+        f"📱 Játékkód: **{st.session_state.game_code}**"
+    )
 
 
 # -------------------------
