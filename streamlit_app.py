@@ -1,4 +1,4 @@
-import csv
+gimport csv
 import random
 import secrets
 import string
@@ -442,6 +442,15 @@ TEAM_STYLES = [
     {"emoji": "🟡", "color": "#EAB308"},
 ]
 
+COLOR_TEAM_NAMES = [
+    "Kék csapat",
+    "Narancs csapat",
+    "Zöld csapat",
+    "Lila csapat",
+    "Piros csapat",
+    "Sárga csapat",
+]
+
 
 # -------------------------
 # Segédfüggvények
@@ -516,7 +525,7 @@ def start_new_game(number_of_teams, decade_counts):
 
         teams.append(
             {
-                "name": f"{team_number}. csapat",
+                "name": COLOR_TEAM_NAMES[team_number - 1],
                 "emoji": style["emoji"],
                 "color": style["color"],
                 "timeline": [start_card],
@@ -786,6 +795,73 @@ def normalized_teams(teams):
     return result
 
 
+def start_rematch(game):
+    old_teams = normalized_teams(game["teams"])
+    shifted_teams = old_teams[1:] + old_teams[:1]
+
+    decade_counts = st.session_state.get(
+        "decade_counts",
+        DEFAULT_DECADE_COUNTS,
+    )
+    selected_songs = []
+
+    for decade in DECADES:
+        wanted = decade_counts.get(decade, 0)
+        decade_songs = [
+            song for song in SONGS
+            if song["decade"] == decade
+        ]
+        if wanted > 0:
+            selected_songs.extend(
+                random.sample(decade_songs, k=wanted)
+            )
+
+    random.shuffle(selected_songs)
+
+    if len(selected_songs) < len(shifted_teams):
+        st.error("Nincs elég dal a visszavágóhoz.")
+        return False
+
+    remaining = selected_songs.copy()
+    fresh_teams = []
+
+    for team in shifted_teams:
+        start_card = random.choice(remaining)
+        remaining.remove(start_card)
+        fresh_teams.append({
+            **team,
+            "timeline": [start_card],
+            "year_points": 0,
+            "tokens": 0,
+        })
+
+    update_shared_game(
+        number_of_teams=len(fresh_teams),
+        teams=fresh_teams,
+        remaining_songs=remaining,
+        active_team_index=0,
+        current_song=None,
+        selected_position=None,
+        revealed=False,
+        last_result=None,
+        game_status="playing",
+        steal_guesses={},
+        token_awards=[],
+        final_round_start_team=None,
+    )
+
+    # Keep this browser attached to the same COLOR team after order shifts.
+    selected_index = st.session_state.get("selected_team_index")
+    if selected_index is not None and selected_index < len(old_teams):
+        selected_name = old_teams[selected_index]["name"]
+        for new_index, team in enumerate(fresh_teams):
+            if team["name"] == selected_name:
+                st.session_state.selected_team_index = new_index
+                break
+
+    return True
+
+
 def finish_game_if_needed(teams, active_team_index, final_round_start_team):
     """Return (status, final_round_start_team)."""
     if final_round_start_team is None:
@@ -916,14 +992,23 @@ def render_synced_game():
         for index, team in enumerate(teams):
             render_timeline(team, active=False)
 
-        if is_host and st.button(
-            "🔄 ÚJ JÁTÉK",
-            use_container_width=True,
-            type="primary",
-            key="finished_new_game",
-        ):
-            reset_game()
-            st.rerun()
+        if is_host:
+            if st.button(
+                "⚔️ VISSZAVÁGÓ",
+                use_container_width=True,
+                type="primary",
+                key="finished_rematch",
+            ):
+                if start_rematch(game):
+                    st.rerun(scope="fragment")
+
+            if st.button(
+                "🔄 TELJESEN ÚJ JÁTÉK",
+                use_container_width=True,
+                key="finished_new_game",
+            ):
+                reset_game()
+                st.rerun()
 
         return
 
@@ -1081,16 +1166,22 @@ def render_synced_game():
                         "idővonalatokon. A zseton mindenképp elveszik."
                     )
 
-                    my_timeline = sorted_timeline(my_team["timeline"])
+                    steal_reference_timeline = sorted_timeline(
+                        active_team["timeline"]
+                    )
 
-                    for position in range(len(my_timeline) + 1):
+                    for position in range(len(steal_reference_timeline) + 1):
                         if position == 0:
-                            label = f"⬅️ {my_timeline[0]['year']} ELÉ"
-                        elif position == len(my_timeline):
-                            label = f"{my_timeline[-1]['year']} UTÁN ➡️"
+                            label = (
+                                f"⬅️ {steal_reference_timeline[0]['year']} ELÉ"
+                            )
+                        elif position == len(steal_reference_timeline):
+                            label = (
+                                f"{steal_reference_timeline[-1]['year']} UTÁN ➡️"
+                            )
                         else:
-                            left = my_timeline[position - 1]["year"]
-                            right = my_timeline[position]["year"]
+                            left = steal_reference_timeline[position - 1]["year"]
+                            right = steal_reference_timeline[position]["year"]
                             label = f"{left} 🎵 {right}"
 
                         if st.button(
@@ -1144,12 +1235,12 @@ def render_synced_game():
                     if not correct:
                         for team_key, position in (game.get("steal_guesses") or {}).items():
                             thief_index = int(team_key)
-                            thief_timeline = sorted_timeline(
-                                teams_copy[thief_index]["timeline"]
+                            steal_reference_timeline = sorted_timeline(
+                                active_team["timeline"]
                             )
 
                             if placement_is_correct(
-                                thief_timeline,
+                                steal_reference_timeline,
                                 position,
                                 song["year"],
                             ):
