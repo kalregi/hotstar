@@ -2,6 +2,8 @@ import csv
 import random
 import secrets
 import string
+import uuid
+from datetime import datetime, timezone
 
 import spotipy
 import streamlit as st
@@ -76,6 +78,8 @@ def create_shared_game(game_code):
         "revealed": st.session_state.revealed,
         "last_result": st.session_state.last_result,
         "game_status": "playing",
+        "host_id": st.session_state.device_id,
+        "host_last_seen": utc_now_iso(),
     }
 
     supabase.table("games").insert(game_data).execute()
@@ -133,6 +137,56 @@ def sync_from_shared_game():
     apply_shared_game(game)
 
     return game
+
+
+
+HOST_TIMEOUT_SECONDS = 20
+
+
+def utc_now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def parse_utc(value):
+    if not value:
+        return None
+
+    return datetime.fromisoformat(
+        value.replace("Z", "+00:00")
+    )
+
+
+def host_is_alive(game):
+    host_id = game.get("host_id")
+    last_seen = parse_utc(game.get("host_last_seen"))
+
+    if not host_id or last_seen is None:
+        return False
+
+    age = (
+        datetime.now(timezone.utc) - last_seen
+    ).total_seconds()
+
+    return age <= HOST_TIMEOUT_SECONDS
+
+
+def claim_host_role():
+    device_id = st.session_state.device_id
+
+    update_shared_game(
+        host_id=device_id,
+        host_last_seen=utc_now_iso(),
+    )
+
+    st.session_state.is_host = True
+
+
+def release_host_role():
+    update_shared_game(
+        host_id=None,
+        host_last_seen=None,
+    )
+    st.session_state.is_host = False
 
 
 # -------------------------
@@ -530,6 +584,9 @@ def render_timeline(team, active=False):
 if "game_started" not in st.session_state:
     st.session_state.game_started = False
 
+if "device_id" not in st.session_state:
+    st.session_state.device_id = uuid.uuid4().hex
+
 
 # -------------------------
 # Fejléc
@@ -711,7 +768,20 @@ def render_synced_game():
     teams = st.session_state.teams
     active_team_index = st.session_state.active_team_index
     active_team = teams[active_team_index]
-    is_host = st.session_state.is_host
+
+    my_device_id = st.session_state.device_id
+    current_host_id = game.get("host_id")
+    is_host = current_host_id == my_device_id
+
+    st.session_state.is_host = is_host
+
+    if is_host:
+        try:
+            update_shared_game(
+                host_last_seen=utc_now_iso()
+            )
+        except Exception:
+            pass
 
     st.info(
         f"📱 Játékkód: **{st.session_state.game_code}**"
@@ -760,6 +830,42 @@ def render_synced_game():
             f"📱 Saját csapat: "
             f"{my_team['emoji']} {my_team['name']}"
         )
+
+    # -------------------------
+    # DJ elérhetőség
+    # -------------------------
+
+    if not is_host and not host_is_alive(game):
+        st.warning(
+            "⚠️ A DJ nem elérhető. "
+            "Valamelyik játékos átveheti a DJ szerepet."
+        )
+
+        if st.button(
+            "🎧 DJ SZEREP ÁTVÉTELE",
+            use_container_width=True,
+            type="primary",
+            key="take_over_dj",
+        ):
+            try:
+                # Only take over if the host is still absent at click time.
+                latest_game = get_shared_game(
+                    st.session_state.game_code
+                )
+
+                if latest_game and not host_is_alive(latest_game):
+                    claim_host_role()
+                    st.rerun(scope="fragment")
+                else:
+                    st.info(
+                        "A DJ időközben újra elérhető lett."
+                    )
+
+            except Exception as e:
+                st.error(
+                    "Nem sikerült átvenni a DJ szerepet."
+                )
+                st.exception(e)
 
     # -------------------------
     # Csapatok
@@ -1085,6 +1191,21 @@ def render_synced_game():
     st.divider()
 
     if is_host:
+        if st.button(
+            "🎧 DJ SZEREP ÁTADÁSA",
+            use_container_width=True,
+            key="release_dj_role",
+        ):
+            try:
+                release_host_role()
+                st.rerun(scope="fragment")
+
+            except Exception as e:
+                st.error(
+                    "Nem sikerült átadni a DJ szerepet."
+                )
+                st.exception(e)
+
         if st.button(
             "🔄 ÚJ JÁTÉK",
             use_container_width=True,
