@@ -1,4 +1,4 @@
-import csv
+.import csv
 import random
 import secrets
 import string
@@ -1308,7 +1308,7 @@ def render_synced_game():
             update_shared_game(game_status="finished")
             reset_game()
             st.rerun()
-gt    else:
+    else:
         if st.button(
             "🚪 KILÉPÉS A JÁTÉKBÓL",
             use_container_width=True,
