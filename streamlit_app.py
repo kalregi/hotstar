@@ -1,4 +1,4 @@
-.import csv
+import csv
 import random
 import secrets
 import string
