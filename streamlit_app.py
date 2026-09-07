@@ -1,6 +1,4 @@
-git add streamlit_app.py
-git commit -m "Allow DJ to join a team"
-git pushimport csv
+import csv
 import random
 import secrets
 import string
