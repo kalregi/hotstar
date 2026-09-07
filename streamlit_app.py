@@ -786,26 +786,16 @@ if spotify is None:
 
     login_url = st.session_state.spotify_login_url
 
-    st.markdown(
-        f"""
-        <a href="{login_url}" target="_self"
-           style="
-               display:block;
-               width:100%;
-               box-sizing:border-box;
-               text-align:center;
-               padding:0.85rem 1rem;
-               border-radius:0.5rem;
-               text-decoration:none;
-               font-weight:700;
-               background:#1DB954;
-               color:white;
-               margin-top:0.5rem;
-           ">
-            🎧 BELÉPÉS SPOTIFY-JAL
-        </a>
-        """,
-        unsafe_allow_html=True,
+    st.link_button(
+        "🎧 BELÉPÉS SPOTIFY-JAL",
+        login_url,
+        use_container_width=True,
+        type="primary",
+    )
+
+    st.caption(
+        "A Spotify egy új fület nyit meg. Sikeres belépés után "
+        "abban a fülben folytasd a játékot."
     )
 
     st.stop()
