@@ -1,4 +1,6 @@
-import csv
+git add streamlit_app.py
+git commit -m "Allow DJ to join a team"
+git pushimport csv
 import random
 import secrets
 import string
@@ -720,6 +722,38 @@ def render_synced_game():
     if is_host:
         st.caption("🎧 DJ / főképernyő")
 
+        host_team_options = {
+            "🎧 Csak DJ vagyok": None,
+            **{
+                f"{team['emoji']} {team['name']}": index
+                for index, team in enumerate(teams)
+            },
+        }
+
+        current_host_team = st.session_state.get(
+            "selected_team_index"
+        )
+
+        host_labels = list(host_team_options.keys())
+        current_label_index = 0
+
+        if current_host_team is not None:
+            for label, index in host_team_options.items():
+                if index == current_host_team:
+                    current_label_index = host_labels.index(label)
+                    break
+
+        selected_host_label = st.selectbox(
+            "A DJ játszik valamelyik csapatban?",
+            options=host_labels,
+            index=current_label_index,
+            key="host_team_selector",
+        )
+
+        st.session_state.selected_team_index = (
+            host_team_options[selected_host_label]
+        )
+
     else:
         my_index = st.session_state.selected_team_index
         my_team = teams[my_index]
@@ -841,8 +875,7 @@ def render_synced_game():
                     st.exception(e)
 
         can_choose = (
-            not is_host
-            and st.session_state.selected_team_index
+            st.session_state.get("selected_team_index")
             == active_team_index
         )
 
