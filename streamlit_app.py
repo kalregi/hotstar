@@ -28,7 +28,10 @@ def generate_game_code():
     alphabet = string.ascii_uppercase + string.digits
 
     for _ in range(20):
-        code = "".join(secrets.choice(alphabet) for _ in range(4))
+        code = "".join(
+            secrets.choice(alphabet)
+            for _ in range(4)
+        )
 
         existing = (
             supabase.table("games")
@@ -41,7 +44,24 @@ def generate_game_code():
         if not existing:
             return code
 
-    raise RuntimeError("Nem sikerült egyedi játékkódot létrehozni.")
+    raise RuntimeError(
+        "Nem sikerült egyedi játékkódot létrehozni."
+    )
+
+
+def get_shared_game(game_code):
+    result = (
+        supabase.table("games")
+        .select("*")
+        .eq("game_code", game_code)
+        .execute()
+        .data
+    )
+
+    if not result:
+        return None
+
+    return result[0]
 
 
 def create_shared_game(game_code):
@@ -61,20 +81,21 @@ def create_shared_game(game_code):
     supabase.table("games").insert(game_data).execute()
 
 
-def load_shared_game(game_code):
-    result = (
+def update_shared_game(**fields):
+    game_code = st.session_state.get("game_code")
+
+    if not game_code:
+        return
+
+    (
         supabase.table("games")
-        .select("*")
+        .update(fields)
         .eq("game_code", game_code)
         .execute()
-        .data
     )
 
-    if not result:
-        return False
 
-    game = result[0]
-
+def apply_shared_game(game):
     st.session_state.teams = game["teams"]
     st.session_state.remaining_songs = game["remaining_songs"]
     st.session_state.active_team_index = game["active_team_index"]
@@ -83,10 +104,35 @@ def load_shared_game(game_code):
     st.session_state.revealed = game["revealed"]
     st.session_state.last_result = game["last_result"]
     st.session_state.game_started = True
+
+
+def load_shared_game(game_code):
+    game = get_shared_game(game_code)
+
+    if game is None:
+        return False
+
+    apply_shared_game(game)
     st.session_state.game_code = game_code
     st.session_state.is_host = False
 
     return True
+
+
+def sync_from_shared_game():
+    game_code = st.session_state.get("game_code")
+
+    if not game_code:
+        return None
+
+    game = get_shared_game(game_code)
+
+    if game is None:
+        return None
+
+    apply_shared_game(game)
+
+    return game
 
 
 # -------------------------
@@ -441,6 +487,7 @@ def reset_game():
         "decade_counts",
         "game_code",
         "is_host",
+        "selected_team_index",
     ]
 
     for key in keys_to_delete:
@@ -615,189 +662,300 @@ if not st.session_state.game_started:
 # Játékállapot
 # -------------------------
 
-teams = st.session_state.teams
-active_team_index = st.session_state.active_team_index
-active_team = teams[active_team_index]
+if "is_host" not in st.session_state:
+    st.session_state.is_host = False
+
+if not st.session_state.is_host:
+    if "selected_team_index" not in st.session_state:
+        st.header("📱 Melyik csapat vagytok?")
+
+        team_options = {
+            f"{team['emoji']} {team['name']}": index
+            for index, team in enumerate(st.session_state.teams)
+        }
+
+        selected_label = st.selectbox(
+            "Csapat",
+            options=list(team_options.keys()),
+        )
+
+        if st.button(
+            "✅ EZ A MI CSAPATUNK",
+            use_container_width=True,
+            type="primary",
+        ):
+            st.session_state.selected_team_index = (
+                team_options[selected_label]
+            )
+            st.rerun()
+
+        st.stop()
 
 
-if "game_code" in st.session_state:
+@st.fragment(run_every=1.5)
+def render_synced_game():
+    try:
+        game = sync_from_shared_game()
+
+    except Exception as e:
+        st.error(
+            "Nem sikerült frissíteni a közös játékállapotot."
+        )
+        st.exception(e)
+        return
+
+    if game is None:
+        st.error("A játék már nem található.")
+        return
+
+    teams = st.session_state.teams
+    active_team_index = st.session_state.active_team_index
+    active_team = teams[active_team_index]
+    is_host = st.session_state.is_host
+
     st.info(
         f"📱 Játékkód: **{st.session_state.game_code}**"
     )
 
-
-# -------------------------
-# Csapatok
-# -------------------------
-
-for index, team in enumerate(teams):
-    render_timeline(
-        team,
-        active=(index == active_team_index),
-    )
-
-
-st.markdown(
-    f"""
-    <div class="current-team"
-         style="border: 3px solid {active_team['color']};">
-        🎯 {active_team['emoji']} {active_team['name']} következik
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.markdown(
-    f"""
-    <div class="small-muted">
-        Hátralévő dalok: {len(st.session_state.remaining_songs)}
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-# -------------------------
-# Nincs aktuális dal
-# -------------------------
-
-if st.session_state.current_song is None:
-    st.write("")
-
-    if st.session_state.remaining_songs:
-        if st.button(
-            "🎵 ÚJ SZÁM",
-            use_container_width=True,
-            type="primary",
-        ):
-            song = random.choice(
-                st.session_state.remaining_songs
-            )
-
-            try:
-                start_song(song)
-
-            except Exception as e:
-                st.error(
-                    "Nem sikerült elindítani a számot."
-                )
-                st.exception(e)
-                st.stop()
-
-            st.session_state.current_song = song
-            st.session_state.remaining_songs.remove(song)
-            st.session_state.selected_position = None
-            st.session_state.revealed = False
-            st.session_state.last_result = None
-
-            st.rerun()
+    if is_host:
+        st.caption("🎧 DJ / főképernyő")
 
     else:
-        st.success("Elfogytak a számok! 🎉")
+        my_index = st.session_state.selected_team_index
+        my_team = teams[my_index]
 
+        st.caption(
+            f"📱 Saját csapat: "
+            f"{my_team['emoji']} {my_team['name']}"
+        )
 
-# -------------------------
-# Van aktuális dal
-# -------------------------
+    # -------------------------
+    # Csapatok
+    # -------------------------
 
-else:
+    for index, team in enumerate(teams):
+        render_timeline(
+            team,
+            active=(index == active_team_index),
+        )
+
+    st.markdown(
+        f"""
+        <div class="current-team"
+             style="border: 3px solid {active_team['color']};">
+            🎯 {active_team['emoji']} {active_team['name']} következik
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        f"""
+        <div class="small-muted">
+            Hátralévő dalok:
+            {len(st.session_state.remaining_songs)}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # -------------------------
+    # Nincs aktuális dal
+    # -------------------------
+
+    if st.session_state.current_song is None:
+        st.write("")
+
+        if st.session_state.remaining_songs:
+            if is_host:
+                if st.button(
+                    "🎵 ÚJ SZÁM",
+                    use_container_width=True,
+                    type="primary",
+                    key="host_new_song",
+                ):
+                    song = random.choice(
+                        st.session_state.remaining_songs
+                    )
+
+                    try:
+                        start_song(song)
+
+                    except Exception as e:
+                        st.error(
+                            "Nem sikerült elindítani a számot."
+                        )
+                        st.exception(e)
+                        return
+
+                    remaining = (
+                        st.session_state.remaining_songs.copy()
+                    )
+                    remaining.remove(song)
+
+                    update_shared_game(
+                        current_song=song,
+                        remaining_songs=remaining,
+                        selected_position=None,
+                        revealed=False,
+                        last_result=None,
+                    )
+
+                    st.rerun(scope="fragment")
+
+            else:
+                st.info(
+                    "🎧 A DJ indítja a következő számot."
+                )
+
+        else:
+            st.success("Elfogytak a számok! 🎉")
+
+        return
+
+    # -------------------------
+    # Van aktuális dal
+    # -------------------------
+
     song = st.session_state.current_song
 
     if not st.session_state.revealed:
         st.info(
             "🎶 Hallgassátok meg a számot, "
-            "majd válasszátok ki a helyét!"
+            "majd az aktív csapat válassza ki a helyét!"
         )
 
-        if st.button(
-            "🔄 DAL ÚJRAINDÍTÁSA",
-            use_container_width=True,
-        ):
-            try:
-                start_song(song)
+        if is_host:
+            if st.button(
+                "🔄 DAL ÚJRAINDÍTÁSA",
+                use_container_width=True,
+                key="host_restart_hidden",
+            ):
+                try:
+                    start_song(song)
 
-            except Exception as e:
-                st.error(
-                    "Nem sikerült újraindítani a számot."
-                )
-                st.exception(e)
+                except Exception as e:
+                    st.error(
+                        "Nem sikerült újraindítani a számot."
+                    )
+                    st.exception(e)
+
+        can_choose = (
+            not is_host
+            and st.session_state.selected_team_index
+            == active_team_index
+        )
 
         timeline = sorted_timeline(
             active_team["timeline"]
         )
 
-        st.subheader("Hová kerüljön?")
+        if can_choose:
+            st.subheader("Hová kerüljön?")
 
-        for position in range(
-            len(timeline) + 1
-        ):
-            if position == 0:
-                label = (
-                    f"⬅️  {timeline[0]['year']} ELÉ"
-                )
+            for position in range(
+                len(timeline) + 1
+            ):
+                if position == 0:
+                    label = (
+                        f"⬅️  {timeline[0]['year']} ELÉ"
+                    )
 
-            elif position == len(timeline):
-                label = (
-                    f"{timeline[-1]['year']} UTÁN  ➡️"
-                )
+                elif position == len(timeline):
+                    label = (
+                        f"{timeline[-1]['year']} UTÁN  ➡️"
+                    )
 
-            else:
-                left = timeline[position - 1]["year"]
-                right = timeline[position]["year"]
+                else:
+                    left = timeline[position - 1]["year"]
+                    right = timeline[position]["year"]
 
-                label = (
-                    f"{left}   🎵   {right}"
-                )
+                    label = (
+                        f"{left}   🎵   {right}"
+                    )
+
+                if (
+                    st.session_state.selected_position
+                    == position
+                ):
+                    label = "✅  " + label
+
+                if st.button(
+                    label,
+                    key=f"team_position_{position}",
+                    use_container_width=True,
+                ):
+                    update_shared_game(
+                        selected_position=position
+                    )
+                    st.rerun(scope="fragment")
 
             if (
                 st.session_state.selected_position
-                == position
+                is not None
             ):
-                label = "✅  " + label
+                st.success("✅ Hely kiválasztva")
 
-            if st.button(
-                label,
-                key=f"position_{position}",
-                use_container_width=True,
-            ):
-                st.session_state.selected_position = (
-                    position
-                )
-                st.rerun()
-
-        if (
-            st.session_state.selected_position
-            is not None
-        ):
-            st.success(
-                "✅ Hely kiválasztva"
+        elif not is_host:
+            my_index = (
+                st.session_state.selected_team_index
             )
 
-            if st.button(
-                "👀 MUTASD!",
-                use_container_width=True,
-                type="primary",
+            if my_index != active_team_index:
+                st.info(
+                    "⏳ Most egy másik csapat következik."
+                )
+
+        if is_host:
+            if (
+                st.session_state.selected_position
+                is None
             ):
-                timeline = sorted_timeline(
-                    active_team["timeline"]
+                st.warning(
+                    "⏳ Az aktív csapat még nem választott helyet."
                 )
 
-                correct = placement_is_correct(
-                    timeline,
-                    st.session_state.selected_position,
-                    song["year"],
+            else:
+                st.success(
+                    "✅ Az aktív csapat kiválasztotta a helyét."
                 )
 
-                st.session_state.last_result = correct
+                if st.button(
+                    "👀 MUTASD!",
+                    use_container_width=True,
+                    type="primary",
+                    key="host_reveal",
+                ):
+                    timeline = sorted_timeline(
+                        active_team["timeline"]
+                    )
 
-                if correct:
-                    st.session_state.teams[
-                        active_team_index
-                    ]["timeline"].append(song)
+                    correct = placement_is_correct(
+                        timeline,
+                        st.session_state.selected_position,
+                        song["year"],
+                    )
 
-                st.session_state.revealed = True
-                st.rerun()
+                    teams_copy = [
+                        {
+                            **team,
+                            "timeline": team["timeline"].copy(),
+                        }
+                        for team in teams
+                    ]
 
+                    if correct:
+                        teams_copy[
+                            active_team_index
+                        ]["timeline"].append(song)
+
+                    update_shared_game(
+                        teams=teams_copy,
+                        last_result=correct,
+                        revealed=True,
+                    )
+
+                    st.rerun(scope="fragment")
 
     # -------------------------
     # Felfedés
@@ -806,6 +964,7 @@ else:
     else:
         if st.session_state.last_result:
             st.success("🎉 HELYES! +1 pont")
+
         else:
             st.error("❌ NEM TALÁLT!")
 
@@ -825,7 +984,8 @@ else:
         )
 
         st.subheader(
-            f"{active_team['emoji']} {active_team['name']} idővonala"
+            f"{active_team['emoji']} "
+            f"{active_team['name']} idővonala"
         )
 
         timeline = sorted_timeline(
@@ -835,59 +995,84 @@ else:
         )
 
         years_html = "".join(
-            f'<span class="year-chip">{item["year"]}</span>'
+            f'<span class="year-chip">'
+            f'{item["year"]}</span>'
             for item in timeline
         )
 
         st.markdown(
             f"""
             <div class="timeline"
-                 style="justify-content:center; margin-bottom:16px;">
+                 style="justify-content:center;
+                        margin-bottom:16px;">
                 {years_html}
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        if st.button(
-            "🔄 DAL ÚJRAINDÍTÁSA",
-            use_container_width=True,
-        ):
-            try:
-                start_song(song)
+        if is_host:
+            if st.button(
+                "🔄 DAL ÚJRAINDÍTÁSA",
+                use_container_width=True,
+                key="host_restart_revealed",
+            ):
+                try:
+                    start_song(song)
 
-            except Exception as e:
-                st.error(
-                    "Nem sikerült újraindítani a számot."
+                except Exception as e:
+                    st.error(
+                        "Nem sikerült újraindítani a számot."
+                    )
+                    st.exception(e)
+
+            if st.button(
+                "➡️ KÖVETKEZŐ CSAPAT",
+                use_container_width=True,
+                type="primary",
+                key="host_next_team",
+            ):
+                next_team_index = (
+                    active_team_index + 1
+                ) % len(teams)
+
+                update_shared_game(
+                    active_team_index=next_team_index,
+                    current_song=None,
+                    selected_position=None,
+                    revealed=False,
+                    last_result=None,
                 )
-                st.exception(e)
 
+                st.rerun(scope="fragment")
+
+        else:
+            st.info(
+                "🎧 A DJ lépteti tovább a játékot."
+            )
+
+    st.divider()
+
+    if is_host:
         if st.button(
-            "➡️ KÖVETKEZŐ CSAPAT",
+            "🔄 ÚJ JÁTÉK",
             use_container_width=True,
-            type="primary",
+            key="host_reset_game",
         ):
-            st.session_state.active_team_index = (
-                active_team_index + 1
-            ) % len(st.session_state.teams)
+            update_shared_game(
+                game_status="finished"
+            )
+            reset_game()
+            st.rerun()
 
-            st.session_state.current_song = None
-            st.session_state.selected_position = None
-            st.session_state.revealed = False
-            st.session_state.last_result = None
-
+    else:
+        if st.button(
+            "🚪 KILÉPÉS A JÁTÉKBÓL",
+            use_container_width=True,
+            key="client_leave_game",
+        ):
+            reset_game()
             st.rerun()
 
 
-# -------------------------
-# Új játék
-# -------------------------
-
-st.divider()
-
-if st.button(
-    "🔄 ÚJ JÁTÉK",
-    use_container_width=True,
-):
-    reset_game()
-    st.rerun()
+render_synced_game()
