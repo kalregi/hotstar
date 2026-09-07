@@ -80,6 +80,9 @@ def create_shared_game(game_code):
         "game_status": "playing",
         "host_id": st.session_state.device_id,
         "host_last_seen": utc_now_iso(),
+        "steal_guesses": {},
+        "token_awards": [],
+        "final_round_start_team": None,
     }
 
     supabase.table("games").insert(game_data).execute()
@@ -107,6 +110,10 @@ def apply_shared_game(game):
     st.session_state.selected_position = game["selected_position"]
     st.session_state.revealed = game["revealed"]
     st.session_state.last_result = game["last_result"]
+    st.session_state.steal_guesses = game.get("steal_guesses") or {}
+    st.session_state.token_awards = game.get("token_awards") or []
+    st.session_state.final_round_start_team = game.get("final_round_start_team")
+    st.session_state.game_status = game.get("game_status", "playing")
     st.session_state.game_started = True
 
 
@@ -513,6 +520,8 @@ def start_new_game(number_of_teams, decade_counts):
                 "emoji": style["emoji"],
                 "color": style["color"],
                 "timeline": [start_card],
+                "year_points": 0,
+                "tokens": 0,
             }
         )
 
@@ -566,7 +575,7 @@ def render_timeline(team, active=False):
         <div class="team-card{active_class}"
              style="border-color: {team['color']};">
             <div class="team-title">
-                {team['emoji']} {team['name']} — {len(team['timeline'])} pont
+                {team['emoji']} {team['name']} — {team.get('year_points', max(0, len(team['timeline']) - 1)) + team.get('tokens', 0) // 3} pont · 🪙 {team.get('tokens', 0)} zseton
             </div>
             <div class="timeline">
                 {years_html}
@@ -741,12 +750,56 @@ if not st.session_state.is_host:
             use_container_width=True,
             type="primary",
         ):
-            st.session_state.selected_team_index = (
-                team_options[selected_label]
-            )
+            st.session_state.selected_team_index = team_options[selected_label]
             st.rerun()
 
         st.stop()
+
+
+def team_year_points(team):
+    return team.get(
+        "year_points",
+        max(0, len(team.get("timeline", [])) - 1),
+    )
+
+
+def team_tokens(team):
+    return team.get("tokens", 0)
+
+
+def team_score(team):
+    return team_year_points(team) + team_tokens(team) // 3
+
+
+def normalized_teams(teams):
+    result = []
+
+    for team in teams:
+        item = {
+            **team,
+            "timeline": team.get("timeline", []).copy(),
+            "year_points": team_year_points(team),
+            "tokens": team_tokens(team),
+        }
+        result.append(item)
+
+    return result
+
+
+def finish_game_if_needed(teams, active_team_index, final_round_start_team):
+    """Return (status, final_round_start_team)."""
+    if final_round_start_team is None:
+        if any(team_score(team) >= 10 for team in teams):
+            # Everyone after this team gets one last turn.
+            return "final_round", active_team_index
+        return "playing", None
+
+    next_team = (active_team_index + 1) % len(teams)
+
+    if next_team == final_round_start_team:
+        return "finished", final_round_start_team
+
+    return "final_round", final_round_start_team
 
 
 @st.fragment(run_every=1.5)
@@ -755,9 +808,7 @@ def render_synced_game():
         game = sync_from_shared_game()
 
     except Exception as e:
-        st.error(
-            "Nem sikerült frissíteni a közös játékállapotot."
-        )
+        st.error("Nem sikerült frissíteni a közös játékállapotot.")
         st.exception(e)
         return
 
@@ -765,27 +816,22 @@ def render_synced_game():
         st.error("A játék már nem található.")
         return
 
-    teams = st.session_state.teams
+    teams = normalized_teams(st.session_state.teams)
     active_team_index = st.session_state.active_team_index
     active_team = teams[active_team_index]
 
     my_device_id = st.session_state.device_id
     current_host_id = game.get("host_id")
     is_host = current_host_id == my_device_id
-
     st.session_state.is_host = is_host
 
     if is_host:
         try:
-            update_shared_game(
-                host_last_seen=utc_now_iso()
-            )
+            update_shared_game(host_last_seen=utc_now_iso())
         except Exception:
             pass
 
-    st.info(
-        f"📱 Játékkód: **{st.session_state.game_code}**"
-    )
+    st.info(f"📱 Játékkód: **{st.session_state.game_code}**")
 
     if is_host:
         st.caption("🎧 DJ / főképernyő")
@@ -798,10 +844,7 @@ def render_synced_game():
             },
         }
 
-        current_host_team = st.session_state.get(
-            "selected_team_index"
-        )
-
+        current_host_team = st.session_state.get("selected_team_index")
         host_labels = list(host_team_options.keys())
         current_label_index = 0
 
@@ -818,23 +861,14 @@ def render_synced_game():
             key="host_team_selector",
         )
 
-        st.session_state.selected_team_index = (
-            host_team_options[selected_host_label]
-        )
+        st.session_state.selected_team_index = host_team_options[selected_host_label]
 
     else:
         my_index = st.session_state.selected_team_index
         my_team = teams[my_index]
+        st.caption(f"📱 Saját csapat: {my_team['emoji']} {my_team['name']}")
 
-        st.caption(
-            f"📱 Saját csapat: "
-            f"{my_team['emoji']} {my_team['name']}"
-        )
-
-    # -------------------------
-    # DJ elérhetőség
-    # -------------------------
-
+    # DJ failover
     if not is_host and not host_is_alive(game):
         st.warning(
             "⚠️ A DJ nem elérhető. "
@@ -847,35 +881,61 @@ def render_synced_game():
             type="primary",
             key="take_over_dj",
         ):
-            try:
-                # Only take over if the host is still absent at click time.
-                latest_game = get_shared_game(
-                    st.session_state.game_code
-                )
+            latest_game = get_shared_game(st.session_state.game_code)
 
-                if latest_game and not host_is_alive(latest_game):
-                    claim_host_role()
-                    st.rerun(scope="fragment")
-                else:
-                    st.info(
-                        "A DJ időközben újra elérhető lett."
-                    )
+            if latest_game and not host_is_alive(latest_game):
+                claim_host_role()
+                st.rerun(scope="fragment")
+            else:
+                st.info("A DJ időközben újra elérhető lett.")
 
-            except Exception as e:
-                st.error(
-                    "Nem sikerült átvenni a DJ szerepet."
-                )
-                st.exception(e)
+    # Finished game
+    if game.get("game_status") == "finished":
+        st.header("🏆 A JÁTÉK VÉGET ÉRT")
 
-    # -------------------------
-    # Csapatok
-    # -------------------------
+        scores = [team_score(team) for team in teams]
+        best = max(scores)
+        winners = [
+            team for team in teams
+            if team_score(team) == best
+        ]
 
-    for index, team in enumerate(teams):
-        render_timeline(
-            team,
-            active=(index == active_team_index),
+        if len(winners) == 1:
+            winner = winners[0]
+            st.success(
+                f"🏆 {winner['emoji']} {winner['name']} nyert "
+                f"{best} ponttal!"
+            )
+        else:
+            names = ", ".join(
+                f"{team['emoji']} {team['name']}"
+                for team in winners
+            )
+            st.success(f"🤝 Döntetlen: {names} — {best} pont")
+
+        for index, team in enumerate(teams):
+            render_timeline(team, active=False)
+
+        if is_host and st.button(
+            "🔄 ÚJ JÁTÉK",
+            use_container_width=True,
+            type="primary",
+            key="finished_new_game",
+        ):
+            reset_game()
+            st.rerun()
+
+        return
+
+    if game.get("game_status") == "final_round":
+        st.warning(
+            "🏁 UTOLSÓ KÖR! Minden hátralévő csapat még egyszer jön, "
+            "aztán vége a játéknak."
         )
+
+    # Teams
+    for index, team in enumerate(teams):
+        render_timeline(team, active=(index == active_team_index))
 
     st.markdown(
         f"""
@@ -890,20 +950,14 @@ def render_synced_game():
     st.markdown(
         f"""
         <div class="small-muted">
-            Hátralévő dalok:
-            {len(st.session_state.remaining_songs)}
+            Hátralévő dalok: {len(st.session_state.remaining_songs)}
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    # -------------------------
-    # Nincs aktuális dal
-    # -------------------------
-
+    # No current song
     if st.session_state.current_song is None:
-        st.write("")
-
         if st.session_state.remaining_songs:
             if is_host:
                 if st.button(
@@ -912,23 +966,16 @@ def render_synced_game():
                     type="primary",
                     key="host_new_song",
                 ):
-                    song = random.choice(
-                        st.session_state.remaining_songs
-                    )
+                    song = random.choice(st.session_state.remaining_songs)
 
                     try:
                         start_song(song)
-
                     except Exception as e:
-                        st.error(
-                            "Nem sikerült elindítani a számot."
-                        )
+                        st.error("Nem sikerült elindítani a számot.")
                         st.exception(e)
                         return
 
-                    remaining = (
-                        st.session_state.remaining_songs.copy()
-                    )
+                    remaining = st.session_state.remaining_songs.copy()
                     remaining.remove(song)
 
                     update_shared_game(
@@ -937,30 +984,23 @@ def render_synced_game():
                         selected_position=None,
                         revealed=False,
                         last_result=None,
+                        steal_guesses={},
+                        token_awards=[],
                     )
-
                     st.rerun(scope="fragment")
-
             else:
-                st.info(
-                    "🎧 A DJ indítja a következő számot."
-                )
-
+                st.info("🎧 A DJ indítja a következő számot.")
         else:
             st.success("Elfogytak a számok! 🎉")
-
         return
-
-    # -------------------------
-    # Van aktuális dal
-    # -------------------------
 
     song = st.session_state.current_song
 
+    # Hidden song phase
     if not st.session_state.revealed:
         st.info(
-            "🎶 Hallgassátok meg a számot, "
-            "majd az aktív csapat válassza ki a helyét!"
+            "🎶 Hallgassátok meg a számot, majd az aktív csapat "
+            "válassza ki a helyét!"
         )
 
         if is_host:
@@ -971,50 +1011,44 @@ def render_synced_game():
             ):
                 try:
                     start_song(song)
-
                 except Exception as e:
-                    st.error(
-                        "Nem sikerült újraindítani a számot."
-                    )
+                    st.error("Nem sikerült újraindítani a számot.")
                     st.exception(e)
 
-        can_choose = (
-            st.session_state.get("selected_team_index")
-            == active_team_index
-        )
+            if st.button(
+                "⏭️ EZ NEM JÓ — KÉREK ÚJ SZÁMOT",
+                use_container_width=True,
+                key="host_replace_song",
+            ):
+                # Discard this song for this game and draw a completely new one.
+                update_shared_game(
+                    current_song=None,
+                    selected_position=None,
+                    revealed=False,
+                    last_result=None,
+                    steal_guesses={},
+                    token_awards=[],
+                )
+                st.rerun(scope="fragment")
 
-        timeline = sorted_timeline(
-            active_team["timeline"]
-        )
+        my_team_index = st.session_state.get("selected_team_index")
+        can_choose = my_team_index == active_team_index
+        active_timeline = sorted_timeline(active_team["timeline"])
 
         if can_choose:
             st.subheader("Hová kerüljön?")
 
-            for position in range(
-                len(timeline) + 1
-            ):
+            for position in range(len(active_timeline) + 1):
                 if position == 0:
-                    label = (
-                        f"⬅️  {timeline[0]['year']} ELÉ"
-                    )
-
-                elif position == len(timeline):
-                    label = (
-                        f"{timeline[-1]['year']} UTÁN  ➡️"
-                    )
-
+                    label = f"⬅️  {active_timeline[0]['year']} ELÉ"
+                elif position == len(active_timeline):
+                    label = f"{active_timeline[-1]['year']} UTÁN  ➡️"
                 else:
-                    left = timeline[position - 1]["year"]
-                    right = timeline[position]["year"]
+                    left = active_timeline[position - 1]["year"]
+                    right = active_timeline[position]["year"]
+                    label = f"{left}   🎵   {right}"
 
-                    label = (
-                        f"{left}   🎵   {right}"
-                    )
-
-                if (
-                    st.session_state.selected_position
-                    == position
-                ):
+                if st.session_state.selected_position == position:
                     label = "✅  " + label
 
                 if st.button(
@@ -1022,40 +1056,71 @@ def render_synced_game():
                     key=f"team_position_{position}",
                     use_container_width=True,
                 ):
-                    update_shared_game(
-                        selected_position=position
-                    )
+                    update_shared_game(selected_position=position)
                     st.rerun(scope="fragment")
 
-            if (
-                st.session_state.selected_position
-                is not None
-            ):
+            if st.session_state.selected_position is not None:
                 st.success("✅ Hely kiválasztva")
 
-        elif not is_host:
-            my_index = (
-                st.session_state.selected_team_index
-            )
+        # Robbery for non-active teams: costs one token immediately.
+        if (
+            my_team_index is not None
+            and my_team_index != active_team_index
+        ):
+            my_team = teams[my_team_index]
+            steals = game.get("steal_guesses") or {}
+            my_key = str(my_team_index)
 
-            if my_index != active_team_index:
-                st.info(
-                    "⏳ Most egy másik csapat következik."
-                )
+            if my_key in steals:
+                st.info("🪙 Rablási tipped leadva. A zseton elköltve.")
+            elif team_tokens(my_team) > 0:
+                with st.expander("🪙 RABLÁS — 1 zseton"):
+                    st.caption(
+                        "Ha szerintetek az aktív csapat rossz helyre tette, "
+                        "1 zsetonért megjelölhetitek a helyes helyet a saját "
+                        "idővonalatokon. A zseton mindenképp elveszik."
+                    )
+
+                    my_timeline = sorted_timeline(my_team["timeline"])
+
+                    for position in range(len(my_timeline) + 1):
+                        if position == 0:
+                            label = f"⬅️ {my_timeline[0]['year']} ELÉ"
+                        elif position == len(my_timeline):
+                            label = f"{my_timeline[-1]['year']} UTÁN ➡️"
+                        else:
+                            left = my_timeline[position - 1]["year"]
+                            right = my_timeline[position]["year"]
+                            label = f"{left} 🎵 {right}"
+
+                        if st.button(
+                            label,
+                            key=f"steal_{my_team_index}_{position}",
+                            use_container_width=True,
+                        ):
+                            latest = get_shared_game(st.session_state.game_code)
+                            latest_steals = latest.get("steal_guesses") or {}
+                            latest_teams = normalized_teams(latest["teams"])
+
+                            if str(my_team_index) not in latest_steals:
+                                latest_teams[my_team_index]["tokens"] -= 1
+                                latest_steals[str(my_team_index)] = position
+
+                                update_shared_game(
+                                    teams=latest_teams,
+                                    steal_guesses=latest_steals,
+                                )
+                            st.rerun(scope="fragment")
+            else:
+                st.caption("🪙 Rabláshoz legalább 1 zseton kell.")
 
         if is_host:
-            if (
-                st.session_state.selected_position
-                is None
-            ):
-                st.warning(
-                    "⏳ Az aktív csapat még nem választott helyet."
-                )
-
+            if st.session_state.selected_position is None:
+                st.warning("⏳ Az aktív csapat még nem választott helyet.")
             else:
-                st.success(
-                    "✅ Az aktív csapat kiválasztotta a helyét."
-                )
+                steals = game.get("steal_guesses") or {}
+                if steals:
+                    st.info(f"🪙 {len(steals)} csapat rablást jelentett be.")
 
                 if st.button(
                     "👀 MUTASD!",
@@ -1063,92 +1128,112 @@ def render_synced_game():
                     type="primary",
                     key="host_reveal",
                 ):
-                    timeline = sorted_timeline(
-                        active_team["timeline"]
-                    )
-
                     correct = placement_is_correct(
-                        timeline,
+                        active_timeline,
                         st.session_state.selected_position,
                         song["year"],
                     )
 
-                    teams_copy = [
-                        {
-                            **team,
-                            "timeline": team["timeline"].copy(),
-                        }
-                        for team in teams
-                    ]
+                    teams_copy = normalized_teams(teams)
 
                     if correct:
-                        teams_copy[
-                            active_team_index
-                        ]["timeline"].append(song)
+                        teams_copy[active_team_index]["timeline"].append(song)
+                        teams_copy[active_team_index]["year_points"] += 1
+
+                    # Successful steal only if active team was wrong.
+                    if not correct:
+                        for team_key, position in (game.get("steal_guesses") or {}).items():
+                            thief_index = int(team_key)
+                            thief_timeline = sorted_timeline(
+                                teams_copy[thief_index]["timeline"]
+                            )
+
+                            if placement_is_correct(
+                                thief_timeline,
+                                position,
+                                song["year"],
+                            ):
+                                teams_copy[thief_index]["timeline"].append(song)
+                                teams_copy[thief_index]["year_points"] += 1
 
                     update_shared_game(
                         teams=teams_copy,
                         last_result=correct,
                         revealed=True,
                     )
-
                     st.rerun(scope="fragment")
 
-    # -------------------------
-    # Felfedés
-    # -------------------------
-
+    # Reveal phase
     else:
         if st.session_state.last_result:
-            st.success("🎉 HELYES! +1 pont")
-
+            st.success("🎉 HELYES! +1 évszám-pont")
         else:
             st.error("❌ NEM TALÁLT!")
 
         st.markdown(
             f"""
-            <div class="song-title">
-                {song['title']}
-            </div>
-            <div class="song-artist">
-                {song['artist']}
-            </div>
-            <div class="big-year">
-                {song['year']}
-            </div>
+            <div class="song-title">{song['title']}</div>
+            <div class="song-artist">{song['artist']}</div>
+            <div class="big-year">{song['year']}</div>
             """,
             unsafe_allow_html=True,
         )
 
-        st.subheader(
-            f"{active_team['emoji']} "
-            f"{active_team['name']} idővonala"
-        )
+        # Show successful steals.
+        steals = game.get("steal_guesses") or {}
+        if steals and not st.session_state.last_result:
+            successful = []
+            for team_key, position in steals.items():
+                idx = int(team_key)
+                # If the song is now present, the steal succeeded.
+                if any(
+                    item.get("spotify_uri") == song.get("spotify_uri")
+                    for item in teams[idx]["timeline"]
+                ):
+                    successful.append(
+                        f"{teams[idx]['emoji']} {teams[idx]['name']}"
+                    )
 
-        timeline = sorted_timeline(
-            st.session_state.teams[
-                active_team_index
-            ]["timeline"]
-        )
-
-        years_html = "".join(
-            f'<span class="year-chip">'
-            f'{item["year"]}</span>'
-            for item in timeline
-        )
-
-        st.markdown(
-            f"""
-            <div class="timeline"
-                 style="justify-content:center;
-                        margin-bottom:16px;">
-                {years_html}
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+            if successful:
+                st.success("🪙 Sikeres rablás: " + ", ".join(successful))
 
         if is_host:
+            st.subheader("🪙 Ki találta el az előadót ÉS a szám címét?")
+            st.caption(
+                "A DJ zsetont adhat bármelyik csapatnak. "
+                "3 meglévő zseton = 1 pont."
+            )
+
+            awarded = set(game.get("token_awards") or [])
+
+            for index, team in enumerate(teams):
+                already = index in awarded
+                label = (
+                    f"✅ {team['emoji']} {team['name']} — zseton megadva"
+                    if already
+                    else f"🪙 {team['emoji']} {team['name']} +1 zseton"
+                )
+
+                if st.button(
+                    label,
+                    key=f"award_token_{index}",
+                    use_container_width=True,
+                    disabled=already,
+                ):
+                    latest = get_shared_game(st.session_state.game_code)
+                    latest_teams = normalized_teams(latest["teams"])
+                    latest_awards = set(latest.get("token_awards") or [])
+
+                    if index not in latest_awards:
+                        latest_teams[index]["tokens"] += 1
+                        latest_awards.add(index)
+
+                        update_shared_game(
+                            teams=latest_teams,
+                            token_awards=sorted(latest_awards),
+                        )
+                    st.rerun(scope="fragment")
+
             if st.button(
                 "🔄 DAL ÚJRAINDÍTÁSA",
                 use_container_width=True,
@@ -1156,11 +1241,8 @@ def render_synced_game():
             ):
                 try:
                     start_song(song)
-
                 except Exception as e:
-                    st.error(
-                        "Nem sikerült újraindítani a számot."
-                    )
+                    st.error("Nem sikerült újraindítani a számot.")
                     st.exception(e)
 
             if st.button(
@@ -1169,24 +1251,43 @@ def render_synced_game():
                 type="primary",
                 key="host_next_team",
             ):
-                next_team_index = (
-                    active_team_index + 1
-                ) % len(teams)
+                latest = get_shared_game(st.session_state.game_code)
+                latest_teams = normalized_teams(latest["teams"])
+                final_start = latest.get("final_round_start_team")
 
-                update_shared_game(
-                    active_team_index=next_team_index,
-                    current_song=None,
-                    selected_position=None,
-                    revealed=False,
-                    last_result=None,
+                status, final_start = finish_game_if_needed(
+                    latest_teams,
+                    active_team_index,
+                    final_start,
                 )
 
-                st.rerun(scope="fragment")
+                if status == "finished":
+                    update_shared_game(
+                        teams=latest_teams,
+                        game_status="finished",
+                        final_round_start_team=final_start,
+                    )
+                else:
+                    next_team_index = (
+                        active_team_index + 1
+                    ) % len(latest_teams)
 
+                    update_shared_game(
+                        teams=latest_teams,
+                        game_status=status,
+                        final_round_start_team=final_start,
+                        active_team_index=next_team_index,
+                        current_song=None,
+                        selected_position=None,
+                        revealed=False,
+                        last_result=None,
+                        steal_guesses={},
+                        token_awards=[],
+                    )
+
+                st.rerun(scope="fragment")
         else:
-            st.info(
-                "🎧 A DJ lépteti tovább a játékot."
-            )
+            st.info("🎧 A DJ adhat zsetont és lépteti tovább a játékot.")
 
     st.divider()
 
@@ -1196,28 +1297,18 @@ def render_synced_game():
             use_container_width=True,
             key="release_dj_role",
         ):
-            try:
-                release_host_role()
-                st.rerun(scope="fragment")
-
-            except Exception as e:
-                st.error(
-                    "Nem sikerült átadni a DJ szerepet."
-                )
-                st.exception(e)
+            release_host_role()
+            st.rerun(scope="fragment")
 
         if st.button(
             "🔄 ÚJ JÁTÉK",
             use_container_width=True,
             key="host_reset_game",
         ):
-            update_shared_game(
-                game_status="finished"
-            )
+            update_shared_game(game_status="finished")
             reset_game()
             st.rerun()
-
-    else:
+gt    else:
         if st.button(
             "🚪 KILÉPÉS A JÁTÉKBÓL",
             use_container_width=True,
