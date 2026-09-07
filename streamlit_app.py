@@ -229,6 +229,17 @@ DECADES = [
     "2020s",
 ]
 
+DEFAULT_DECADE_COUNTS = {
+    "1950s": 5,
+    "1960s": 10,
+    "1970s": 15,
+    "1980s": 20,
+    "1990s": 20,
+    "2000s": 20,
+    "2010s": 15,
+    "2020s": 10,
+}
+
 AVAILABLE_BY_DECADE = {
     decade: sum(1 for song in SONGS if song["decade"] == decade)
     for decade in DECADES
@@ -433,11 +444,14 @@ if not st.session_state.game_started:
     for decade in DECADES:
         available = AVAILABLE_BY_DECADE[decade]
 
-        decade_counts[decade] = st.number_input(
+        decade_counts[decade] = st.slider(
             f"{decade} — elérhető: {available}",
             min_value=0,
             max_value=available,
-            value=min(20, available),
+            value=min(
+                DEFAULT_DECADE_COUNTS[decade],
+                available,
+            ),
             step=1,
             key=f"decade_count_{decade}",
         )
