@@ -1398,53 +1398,6 @@ def render_synced_game():
         unsafe_allow_html=True,
     )
 
-    # Always-visible token exchange for the selected team.
-    if my_team_index is not None:
-        my_team_for_exchange = teams[my_team_index]
-
-        st.markdown("### 🪙 Zsetonbeváltás")
-        st.caption(
-            "3 zsetonért kérhettek 1 véletlen évszámkártyát."
-        )
-
-        if team_tokens(my_team_for_exchange) >= 3:
-            if st.button(
-                "🪙 3 ZSETON → +1 ÉVSZÁMKÁRTYA",
-                key=f"exchange_tokens_{my_team_index}",
-                use_container_width=True,
-            ):
-                latest = get_shared_game(st.session_state.game_code)
-                latest_teams = normalized_teams(latest["teams"])
-                latest_remaining = list(
-                    latest.get("remaining_songs") or []
-                )
-
-                if (
-                    team_tokens(latest_teams[my_team_index]) >= 3
-                    and latest_remaining
-                ):
-                    bonus_song = random.choice(latest_remaining)
-                    latest_remaining.remove(bonus_song)
-                    latest_teams[my_team_index]["tokens"] -= 3
-                    latest_teams[my_team_index]["timeline"].append(
-                        bonus_song
-                    )
-                    latest_teams[my_team_index]["year_points"] += 1
-
-                    update_shared_game(
-                        teams=latest_teams,
-                        remaining_songs=latest_remaining,
-                    )
-
-                st.rerun(scope="fragment")
-        else:
-            st.caption(
-                f"Jelenleg {team_tokens(my_team_for_exchange)} zsetonotok van; "
-                "a beváltáshoz 3 kell."
-            )
-
-        st.divider()
-
     # No current song
     if st.session_state.current_song is None:
         if st.session_state.remaining_songs:
@@ -1521,6 +1474,54 @@ def render_synced_game():
                 st.rerun(scope="fragment")
 
         my_team_index = st.session_state.get("selected_team_index")
+
+    # Always-visible token exchange for the selected team.
+    if my_team_index is not None:
+        my_team_for_exchange = teams[my_team_index]
+
+        st.markdown("### 🪙 Zsetonbeváltás")
+        st.caption(
+            "3 zsetonért kérhettek 1 véletlen évszámkártyát."
+        )
+
+        if team_tokens(my_team_for_exchange) >= 3:
+            if st.button(
+                "🪙 3 ZSETON → +1 ÉVSZÁMKÁRTYA",
+                key=f"exchange_tokens_{my_team_index}",
+                use_container_width=True,
+            ):
+                latest = get_shared_game(st.session_state.game_code)
+                latest_teams = normalized_teams(latest["teams"])
+                latest_remaining = list(
+                    latest.get("remaining_songs") or []
+                )
+
+                if (
+                    team_tokens(latest_teams[my_team_index]) >= 3
+                    and latest_remaining
+                ):
+                    bonus_song = random.choice(latest_remaining)
+                    latest_remaining.remove(bonus_song)
+                    latest_teams[my_team_index]["tokens"] -= 3
+                    latest_teams[my_team_index]["timeline"].append(
+                        bonus_song
+                    )
+                    latest_teams[my_team_index]["year_points"] += 1
+
+                    update_shared_game(
+                        teams=latest_teams,
+                        remaining_songs=latest_remaining,
+                    )
+
+                st.rerun(scope="fragment")
+        else:
+            st.caption(
+                f"Jelenleg {team_tokens(my_team_for_exchange)} zsetonotok van; "
+                "a beváltáshoz 3 kell."
+            )
+
+        st.divider()
+
         can_choose = my_team_index == active_team_index
         active_timeline = sorted_timeline(active_team["timeline"])
 
