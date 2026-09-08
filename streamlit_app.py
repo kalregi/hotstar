@@ -1,4 +1,4 @@
-import csv
+gitimport csv
 import random
 from io import BytesIO
 
@@ -621,7 +621,7 @@ def render_timeline(team, active=False):
         <div class="team-card{active_class}"
              style="border-color: {team['color']};">
             <div class="team-title">
-                {team['emoji']} {team['name']} — {team.get('year_points', max(0, len(team['timeline']) - 1)) + team.get('tokens', 0) // 3} pont · 🪙 {team.get('tokens', 0)} zseton
+                {team['emoji']} {team['name']} — 🏆 Összpontszám: {team_score(team)} · 📅 Évszámok: {team.get('year_points', max(0, len(team['timeline']) - 1))} · 🪙 {team.get('tokens', 0)} zseton
             </div>
             <div class="timeline">
                 {years_html}
@@ -1026,7 +1026,7 @@ def render_synced_game():
         with st.expander("🧪 Tesztelés", expanded=False):
             st.caption(
                 "Csak a host látja. A soron lévő csapatot 7 évszám + "
-                "9 zseton = 10 pontra állítja, így azonnal tesztelhető "
+                "9 zseton állapotra teszi (ez összesen 10 győzelmi pont), így "
                 "a játék vége anélkül, hogy végig kellene játszani."
             )
 
