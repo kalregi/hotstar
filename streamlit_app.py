@@ -553,9 +553,15 @@ def start_new_game(number_of_teams, decade_counts):
 
         style = TEAM_STYLES[team_number - 1]
 
+        team_name = (
+            "Kooperatív csapat"
+            if number_of_teams == 1
+            else COLOR_TEAM_NAMES[team_number - 1]
+        )
+
         teams.append(
             {
-                "name": COLOR_TEAM_NAMES[team_number - 1],
+                "name": team_name,
                 "emoji": style["emoji"],
                 "color": style["color"],
                 "timeline": [start_card],
@@ -683,10 +689,20 @@ if not st.session_state.game_started:
         )
 
         number_of_teams = st.selectbox(
-            "Csapatok száma",
-            options=[2, 3, 4, 5, 6],
-            index=0,
+            "Játékmód / csapatok száma",
+            options=[1, 2, 3, 4, 5, 6],
+            index=1,
+            format_func=lambda n: (
+                "🤝 Kooperatív mód – 1 csapat"
+                if n == 1
+                else f"{n} csapat"
+            ),
         )
+
+        if number_of_teams == 1:
+            st.caption(
+                "🤝 Kooperatív mód: mindenki ugyanazért az egy csapatért játszik."
+            )
 
         st.subheader("🎶 Dalok évtizedenként")
 
@@ -861,7 +877,11 @@ def normalized_teams(teams):
 
 def start_rematch(game):
     old_teams = normalized_teams(game["teams"])
-    shifted_teams = old_teams[1:] + old_teams[:1]
+    shifted_teams = (
+        old_teams
+        if len(old_teams) == 1
+        else old_teams[1:] + old_teams[:1]
+    )
 
     decade_counts = st.session_state.get(
         "decade_counts",
@@ -927,16 +947,33 @@ def start_rematch(game):
 
 
 def finish_game_if_needed(teams, active_team_index, final_round_start_team):
-    """Return (status, final_round_start_team)."""
-    if final_round_start_team is None:
-        if any(team_score(team) >= 10 for team in teams):
-            # Everyone after this team gets one last turn.
-            return "final_round", active_team_index
+    """Return (status, final_round_start_team).
+
+    A többcsapatos játék teljes körökben ér véget.
+    Ha valaki eléri a 10 pontot, csak azok a csapatok kapnak még egy kört,
+    akik az aktuális körben még nem játszottak.
+    """
+    if len(teams) == 1:
+        if team_score(teams[0]) >= 10:
+            return "finished", None
         return "playing", None
 
-    next_team = (active_team_index + 1) % len(teams)
+    if final_round_start_team is None:
+        if not any(team_score(team) >= 10 for team in teams):
+            return "playing", None
 
-    if next_team == final_round_start_team:
+        # A normál kör a 0. indexű csapattal kezdődik.
+        # Ha az utolsó csapat éri el a 10 pontot, mindenki már játszott
+        # ebben a körben, ezért a játék azonnal véget ér.
+        if active_team_index == len(teams) - 1:
+            return "finished", None
+
+        # A hátralévő csapatok még befejezik az aktuális kört.
+        return "final_round", active_team_index
+
+    # Már a befejező körben vagyunk. Az utolsó csapat után mindenki
+    # ugyanannyi kört játszott, ezért lezárjuk a játékot.
+    if active_team_index == len(teams) - 1:
         return "finished", final_round_start_team
 
     return "final_round", final_round_start_team
@@ -1031,7 +1068,11 @@ def render_synced_game():
             if team_score(team) == best
         ]
 
-        if len(winners) == 1:
+        if len(teams) == 1:
+            st.success(
+                f"🎉 SIKERÜLT! Elértétek a {best} pontot!"
+            )
+        elif len(winners) == 1:
             winner = winners[0]
             st.success(
                 f"🏆 {winner['emoji']} {winner['name']} nyert "
@@ -1204,7 +1245,8 @@ def render_synced_game():
 
         # Robbery for non-active teams: costs one token immediately.
         if (
-            my_team_index is not None
+            len(teams) > 1
+            and my_team_index is not None
             and my_team_index != active_team_index
         ):
             my_team = teams[my_team_index]
