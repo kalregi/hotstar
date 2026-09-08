@@ -844,9 +844,13 @@ if not st.session_state.is_host:
             type="primary",
         ):
             selected_index = team_options[selected_label]
-            selected_team = normalized_teams(
-                st.session_state.teams
-            )[selected_index]
+
+            # A csatlakozási képernyőn a csapatokat a már betöltött
+            # Supabase-játékból vesszük, nem egy még nem létező
+            # session_state.teams változóból.
+            joined_game = get_shared_game(st.session_state.game_code)
+            joined_teams = normalized_teams(joined_game["teams"])
+            selected_team = joined_teams[selected_index]
 
             st.session_state.selected_team_index = selected_index
             st.session_state.selected_team_id = selected_team["team_id"]
