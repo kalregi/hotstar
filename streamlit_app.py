@@ -1,4 +1,4 @@
-gitimport csv
+import csv
 import random
 from io import BytesIO
 
