@@ -1,5 +1,8 @@
 import csv
 import random
+from io import BytesIO
+
+import qrcode
 import secrets
 import string
 import uuid
@@ -197,6 +200,33 @@ def release_host_role():
 
 
 # -------------------------
+# QR-kód
+# -------------------------
+
+PUBLIC_APP_URL = "https://hotstar.streamlit.app"
+
+
+def make_join_qr(game_code):
+    join_url = f"{PUBLIC_APP_URL}/?join={game_code}"
+
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=8,
+        border=3,
+    )
+    qr.add_data(join_url)
+    qr.make(fit=True)
+
+    image = qr.make_image(fill_color="black", back_color="white")
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    buffer.seek(0)
+
+    return join_url, buffer
+
+
+# -------------------------
 # Mobilbarát kinézet
 # -------------------------
 
@@ -366,184 +396,20 @@ sp_oauth = SpotifyOAuth(
     requests_timeout=10,
 )
 
-
-def spotify_token_is_expired(token_info):
-    if not token_info:
-        return True
-    expires_at = token_info.get("expires_at")
-    if expires_at is None:
-        return True
-    return expires_at <= int(datetime.now(timezone.utc).timestamp()) + 60
-
-
-def get_spotify_auth_session(session_key):
-    if not session_key:
-        return None
-    result = (
-        supabase.table("spotify_auth_sessions")
-        .select("*")
-        .eq("session_key", session_key)
-        .execute()
-        .data
-    )
-    return result[0] if result else None
-
-
-def save_spotify_auth_session(session_key, **fields):
-    (
-        supabase.table("spotify_auth_sessions")
-        .update(fields)
-        .eq("session_key", session_key)
-        .execute()
+try:
+    token_info = sp_oauth.refresh_access_token(
+        st.secrets["SPOTIFY_REFRESH_TOKEN"]
     )
 
-
-def create_spotify_login():
-    session_key = secrets.token_urlsafe(32)
-    supabase.table("spotify_auth_sessions").insert(
-        {
-            "session_key": session_key,
-            "created_at": utc_now_iso(),
-            "updated_at": utc_now_iso(),
-        }
-    ).execute()
-    return sp_oauth.get_authorize_url(state=session_key)
-
-
-def token_info_from_auth_row(row):
-    if not row or not row.get("access_token"):
-        return None
-    return {
-        "access_token": row["access_token"],
-        "refresh_token": row.get("refresh_token"),
-        "expires_at": row.get("expires_at"),
-        "scope": row.get("scope"),
-        "token_type": "Bearer",
-    }
-
-
-def restore_spotify_from_session_key(session_key):
-    row = get_spotify_auth_session(session_key)
-    if not row or not row.get("access_token"):
-        return False
-    st.session_state.spotify_session_key = session_key
-    st.session_state.spotify_token_info = token_info_from_auth_row(row)
-    st.session_state.spotify_user_name = (
-        row.get("spotify_user_name") or "Spotify-felhasználó"
-    )
-    return True
-
-
-def handle_spotify_callback():
-    code = st.query_params.get("code")
-    state = st.query_params.get("state")
-    error = st.query_params.get("error")
-    session_key = st.query_params.get("spotify_session")
-
-    if session_key and not code:
-        restore_spotify_from_session_key(session_key)
-        return
-
-    if error:
-        st.error("A Spotify-bejelentkezés nem sikerült.")
-        return
-
-    if not code or not state:
-        return
-
-    auth_row = get_spotify_auth_session(state)
-
-    if auth_row is None:
-        st.error(
-            "A Spotify-bejelentkezés munkamenete nem található. "
-            "Indítsd el újra a bejelentkezést."
-        )
-        return
-
-    if auth_row.get("access_token"):
-        restore_spotify_from_session_key(state)
-        st.query_params.clear()
-        st.query_params["spotify_session"] = state
-        return
-
-    try:
-        token_info = sp_oauth.get_access_token(code, check_cache=False)
-
-        client = spotipy.Spotify(
-            auth=token_info["access_token"],
-            requests_timeout=10,
-        )
-        profile = client.current_user()
-        user_name = (
-            profile.get("display_name")
-            or profile.get("id")
-            or "Spotify-felhasználó"
-        )
-
-        save_spotify_auth_session(
-            state,
-            access_token=token_info["access_token"],
-            refresh_token=token_info.get("refresh_token"),
-            expires_at=token_info.get("expires_at"),
-            scope=token_info.get("scope"),
-            spotify_user_name=user_name,
-            updated_at=utc_now_iso(),
-        )
-
-        st.session_state.spotify_session_key = state
-        st.session_state.spotify_token_info = token_info
-        st.session_state.spotify_user_name = user_name
-
-        st.query_params.clear()
-        st.query_params["spotify_session"] = state
-
-    except Exception:
-        st.error(
-            "Nem sikerült befejezni a Spotify-bejelentkezést. "
-            "Próbáld meg újra."
-        )
-
-
-def get_spotify_client():
-    token_info = st.session_state.get("spotify_token_info")
-    session_key = st.session_state.get("spotify_session_key")
-
-    if not token_info:
-        return None
-
-    if spotify_token_is_expired(token_info):
-        refresh_token = token_info.get("refresh_token")
-        if not refresh_token:
-            return None
-
-        try:
-            refreshed = sp_oauth.refresh_access_token(refresh_token)
-            if not refreshed.get("refresh_token"):
-                refreshed["refresh_token"] = refresh_token
-
-            st.session_state.spotify_token_info = refreshed
-            token_info = refreshed
-
-            if session_key:
-                save_spotify_auth_session(
-                    session_key,
-                    access_token=refreshed["access_token"],
-                    refresh_token=refreshed.get("refresh_token"),
-                    expires_at=refreshed.get("expires_at"),
-                    scope=refreshed.get("scope"),
-                    updated_at=utc_now_iso(),
-                )
-        except Exception:
-            return None
-
-    return spotipy.Spotify(
+    spotify = spotipy.Spotify(
         auth=token_info["access_token"],
         requests_timeout=10,
     )
 
-
-handle_spotify_callback()
-spotify = get_spotify_client()
+except Exception as e:
+    st.error("Nem sikerült kapcsolódni a Spotifyhoz.")
+    st.exception(e)
+    st.stop()
 
 
 # -------------------------
@@ -724,6 +590,7 @@ def reset_game():
         "game_code",
         "is_host",
         "selected_team_index",
+        "host_authenticated",
     ]
 
     for key in keys_to_delete:
@@ -775,39 +642,26 @@ if "device_id" not in st.session_state:
 # -------------------------
 
 st.title("🎵 Homemade Hitster")
-
-if spotify is None:
-    st.info(
-        "A játék használatához jelentkezz be a saját Spotify-fiókoddal."
-    )
-
-    if "spotify_login_url" not in st.session_state:
-        st.session_state.spotify_login_url = create_spotify_login()
-
-    login_url = st.session_state.spotify_login_url
-
-    st.link_button(
-        "🎧 BELÉPÉS SPOTIFY-JAL",
-        login_url,
-        use_container_width=True,
-        type="primary",
-    )
-
-    st.caption(
-        "A Spotify egy új fület nyit meg. Sikeres belépés után "
-        "abban a fülben folytasd a játékot."
-    )
-
-    st.stop()
-
-st.caption(
-    f"✅ Spotify: {st.session_state.get('spotify_user_name', 'csatlakoztatva')}"
-)
+st.caption("✅ Spotify csatlakoztatva")
 
 
 # -------------------------
 # Kezdőképernyő
 # -------------------------
+
+if not st.session_state.game_started:
+    qr_join_code = st.query_params.get("join")
+
+    if qr_join_code:
+        qr_join_code = str(qr_join_code).strip().upper()
+
+        if len(qr_join_code) == 6:
+            try:
+                if load_shared_game(qr_join_code):
+                    st.query_params.clear()
+                    st.rerun()
+            except Exception:
+                pass
 
 if not st.session_state.game_started:
     create_tab, join_tab = st.tabs(
@@ -820,6 +674,12 @@ if not st.session_state.game_started:
         st.write(
             "Válasszátok ki a csapatok számát és azt, "
             "hány dalt szeretnétek az egyes évtizedekből."
+        )
+
+        host_password = st.text_input(
+            "Host jelszó",
+            type="password",
+            help="Csak a DJ-nek kell megadnia.",
         )
 
         number_of_teams = st.selectbox(
@@ -864,26 +724,39 @@ if not st.session_state.game_started:
             use_container_width=True,
             type="primary",
         ):
-            started = start_new_game(
-                number_of_teams,
-                decade_counts,
-            )
+            expected_password = st.secrets.get("HOST_PASSWORD", "")
 
-            if started:
-                try:
-                    game_code = generate_game_code()
-                    create_shared_game(game_code)
+            if (
+                not expected_password
+                or not secrets.compare_digest(
+                    host_password,
+                    expected_password,
+                )
+            ):
+                st.error("Hibás host jelszó.")
 
-                    st.session_state.game_code = game_code
-                    st.session_state.is_host = True
-                    st.rerun()
+            else:
+                started = start_new_game(
+                    number_of_teams,
+                    decade_counts,
+                )
 
-                except Exception as e:
-                    reset_game()
-                    st.error(
-                        "Nem sikerült létrehozni a közös játékot."
-                    )
-                    st.exception(e)
+                if started:
+                    try:
+                        game_code = generate_game_code()
+                        create_shared_game(game_code)
+
+                        st.session_state.game_code = game_code
+                        st.session_state.is_host = True
+                        st.session_state.host_authenticated = True
+                        st.rerun()
+
+                    except Exception as e:
+                        reset_game()
+                        st.error(
+                            "Nem sikerült létrehozni a közös játékot."
+                        )
+                        st.exception(e)
 
     with join_tab:
         st.header("📱 Csatlakozás játékhoz")
@@ -1089,19 +962,29 @@ def render_synced_game():
 
     my_device_id = st.session_state.device_id
     current_host_id = game.get("host_id")
-    is_host = current_host_id == my_device_id
+    is_host = (
+        st.session_state.get("host_authenticated", False)
+        and current_host_id == my_device_id
+    )
     st.session_state.is_host = is_host
-
-    if is_host:
-        try:
-            update_shared_game(host_last_seen=utc_now_iso())
-        except Exception:
-            pass
 
     st.info(f"📱 Játékkód: **{st.session_state.game_code}**")
 
     if is_host:
         st.caption("🎧 DJ / főképernyő")
+
+        join_url, qr_buffer = make_join_qr(st.session_state.game_code)
+
+        with st.expander("📱 QR-kód a csatlakozáshoz", expanded=True):
+            st.image(
+                qr_buffer,
+                caption="A játékosok ezt olvassák be a telefonjukkal.",
+                width=260,
+            )
+            st.caption(
+                "A QR-kód automatikusan megnyitja ezt a játékot; "
+                "a játékosnak már csak a csapatát kell kiválasztania."
+            )
 
         host_team_options = {
             "🎧 Csak DJ vagyok": None,
@@ -1135,26 +1018,7 @@ def render_synced_game():
         my_team = teams[my_index]
         st.caption(f"📱 Saját csapat: {my_team['emoji']} {my_team['name']}")
 
-    # DJ failover
-    if not is_host and not host_is_alive(game):
-        st.warning(
-            "⚠️ A DJ nem elérhető. "
-            "Valamelyik játékos átveheti a DJ szerepet."
-        )
-
-        if st.button(
-            "🎧 DJ SZEREP ÁTVÉTELE",
-            use_container_width=True,
-            type="primary",
-            key="take_over_dj",
-        ):
-            latest_game = get_shared_game(st.session_state.game_code)
-
-            if latest_game and not host_is_alive(latest_game):
-                claim_host_role()
-                st.rerun(scope="fragment")
-            else:
-                st.info("A DJ időközben újra elérhető lett.")
+    # A DJ szerepet csak a host jelszóval játékot létrehozó eszköz kapja meg.
 
     # Finished game
     if game.get("game_status") == "finished":
@@ -1574,14 +1438,6 @@ def render_synced_game():
     st.divider()
 
     if is_host:
-        if st.button(
-            "🎧 DJ SZEREP ÁTADÁSA",
-            use_container_width=True,
-            key="release_dj_role",
-        ):
-            release_host_role()
-            st.rerun(scope="fragment")
-
         if st.button(
             "🔄 ÚJ JÁTÉK",
             use_container_width=True,
