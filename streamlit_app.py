@@ -814,6 +814,63 @@ if not st.session_state.game_started:
                     )
                     st.exception(e)
 
+        st.divider()
+        st.subheader("🎧 DJ visszacsatlakozás")
+        st.caption(
+            "Ha a DJ böngészője megszakadt vagy újratöltődött, "
+            "a játékkóddal és a host jelszóval vissza lehet venni "
+            "ugyanennek a játéknak a DJ szerepét."
+        )
+
+        reconnect_password = st.text_input(
+            "Host jelszó a visszacsatlakozáshoz",
+            type="password",
+            key="reconnect_host_password",
+        )
+
+        if st.button(
+            "🎧 VISSZACSATLAKOZÁS DJ-KÉNT",
+            use_container_width=True,
+            type="primary",
+        ):
+            if len(join_code) != 6:
+                st.error("Adj meg egy 6 karakteres játékkódot.")
+
+            else:
+                expected_password = st.secrets.get("HOST_PASSWORD", "")
+
+                if (
+                    not expected_password
+                    or not secrets.compare_digest(
+                        reconnect_password,
+                        expected_password,
+                    )
+                ):
+                    st.error("Hibás host jelszó.")
+
+                else:
+                    try:
+                        if load_shared_game(join_code):
+                            # A helyes host jelszó birtokában ez a böngésző
+                            # lesz az adott játék új DJ-je.
+                            update_shared_game(
+                                host_id=st.session_state.device_id,
+                                host_last_seen=utc_now_iso(),
+                            )
+                            st.session_state.host_authenticated = True
+                            st.session_state.is_host = True
+                            st.rerun()
+                        else:
+                            st.error(
+                                "Nem található ilyen játékkód."
+                            )
+
+                    except Exception as e:
+                        st.error(
+                            "Nem sikerült DJ-ként visszacsatlakozni."
+                        )
+                        st.exception(e)
+
     st.stop()
 
 
