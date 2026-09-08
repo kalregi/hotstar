@@ -561,6 +561,9 @@ def start_new_game(number_of_teams, decade_counts):
 
         teams.append(
             {
+                "team_id": f"team_{team_number - 1}",
+                "team_order": team_number - 1,
+                "rematch_number": 0,
                 "name": team_name,
                 "emoji": style["emoji"],
                 "color": style["color"],
@@ -596,6 +599,7 @@ def reset_game():
         "game_code",
         "is_host",
         "selected_team_index",
+        "selected_team_id",
         "host_authenticated",
     ]
 
@@ -839,7 +843,13 @@ if not st.session_state.is_host:
             use_container_width=True,
             type="primary",
         ):
-            st.session_state.selected_team_index = team_options[selected_label]
+            selected_index = team_options[selected_label]
+            selected_team = normalized_teams(
+                st.session_state.teams
+            )[selected_index]
+
+            st.session_state.selected_team_index = selected_index
+            st.session_state.selected_team_id = selected_team["team_id"]
             st.rerun()
 
         st.stop()
@@ -860,12 +870,33 @@ def team_score(team):
     return team_year_points(team) + team_tokens(team) // 3
 
 
+def infer_team_order(team, fallback_index):
+    if "team_order" in team:
+        return int(team["team_order"])
+
+    name = team.get("name")
+    if name in COLOR_TEAM_NAMES:
+        return COLOR_TEAM_NAMES.index(name)
+
+    emoji = team.get("emoji")
+    for index, style in enumerate(TEAM_STYLES):
+        if style["emoji"] == emoji:
+            return index
+
+    return fallback_index
+
+
 def normalized_teams(teams):
     result = []
 
-    for team in teams:
+    for index, team in enumerate(teams):
+        team_order = infer_team_order(team, index)
+
         item = {
             **team,
+            "team_id": team.get("team_id", f"team_{team_order}"),
+            "team_order": team_order,
+            "rematch_number": int(team.get("rematch_number", 0)),
             "timeline": team.get("timeline", []).copy(),
             "year_points": team_year_points(team),
             "tokens": team_tokens(team),
@@ -875,13 +906,53 @@ def normalized_teams(teams):
     return result
 
 
+def sync_selected_team_identity(teams):
+    """Keep a browser attached to the same COLOR/team across rematches."""
+    selected_team_id = st.session_state.get("selected_team_id")
+
+    if selected_team_id is None:
+        selected_index = st.session_state.get("selected_team_index")
+        if (
+            selected_index is not None
+            and 0 <= selected_index < len(teams)
+        ):
+            selected_team_id = teams[selected_index]["team_id"]
+            st.session_state.selected_team_id = selected_team_id
+
+    if selected_team_id is None:
+        return
+
+    for index, team in enumerate(teams):
+        if team["team_id"] == selected_team_id:
+            st.session_state.selected_team_index = index
+            return
+
+    # The selected team no longer exists (for example after a full new game).
+    st.session_state.pop("selected_team_id", None)
+    st.session_state.pop("selected_team_index", None)
+
+
 def start_rematch(game):
     old_teams = normalized_teams(game["teams"])
-    shifted_teams = (
-        old_teams
-        if len(old_teams) == 1
-        else old_teams[1:] + old_teams[:1]
+    team_count = len(old_teams)
+
+    current_rematch_number = max(
+        (team.get("rematch_number", 0) for team in old_teams),
+        default=0,
     )
+    next_rematch_number = current_rematch_number + 1
+
+    if team_count == 1:
+        shifted_teams = old_teams
+    else:
+        # The starting COLOR moves forward by one position after each game.
+        next_start_order = next_rematch_number % team_count
+        shifted_teams = sorted(
+            old_teams,
+            key=lambda team: (
+                team["team_order"] - next_start_order
+            ) % team_count,
+        )
 
     decade_counts = st.session_state.get(
         "decade_counts",
@@ -914,6 +985,7 @@ def start_rematch(game):
         remaining.remove(start_card)
         fresh_teams.append({
             **team,
+            "rematch_number": next_rematch_number,
             "timeline": [start_card],
             "year_points": 0,
             "tokens": 0,
@@ -934,14 +1006,8 @@ def start_rematch(game):
         final_round_start_team=None,
     )
 
-    # Keep this browser attached to the same COLOR team after order shifts.
-    selected_index = st.session_state.get("selected_team_index")
-    if selected_index is not None and selected_index < len(old_teams):
-        selected_name = old_teams[selected_index]["name"]
-        for new_index, team in enumerate(fresh_teams):
-            if team["name"] == selected_name:
-                st.session_state.selected_team_index = new_index
-                break
+    # Keep the host browser attached to the same color/team immediately.
+    sync_selected_team_identity(fresh_teams)
 
     return True
 
@@ -994,6 +1060,8 @@ def render_synced_game():
         return
 
     teams = normalized_teams(st.session_state.teams)
+    sync_selected_team_identity(teams)
+
     active_team_index = st.session_state.active_team_index
     active_team = teams[active_team_index]
 
@@ -1090,7 +1158,15 @@ def render_synced_game():
             key="host_team_selector",
         )
 
-        st.session_state.selected_team_index = host_team_options[selected_host_label]
+        selected_host_index = host_team_options[selected_host_label]
+        st.session_state.selected_team_index = selected_host_index
+
+        if selected_host_index is None:
+            st.session_state.pop("selected_team_id", None)
+        else:
+            st.session_state.selected_team_id = (
+                teams[selected_host_index]["team_id"]
+            )
 
     else:
         my_index = st.session_state.selected_team_index
