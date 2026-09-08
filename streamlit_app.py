@@ -1023,6 +1023,48 @@ def render_synced_game():
                 "a játékosnak már csak a csapatát kell kiválasztania."
             )
 
+        with st.expander("🧪 Tesztelés", expanded=False):
+            st.caption(
+                "Csak a host látja. A soron lévő csapatot 7 évszám + "
+                "9 zseton = 10 pontra állítja, így azonnal tesztelhető "
+                "a játék vége anélkül, hogy végig kellene játszani."
+            )
+
+            if st.button(
+                "🧪 SORON LÉVŐ CSAPAT → 10 PONT",
+                use_container_width=True,
+                key="host_test_set_10_points",
+            ):
+                latest = get_shared_game(st.session_state.game_code)
+                test_teams = normalized_teams(latest["teams"])
+                test_active = latest.get("active_team_index", 0)
+
+                team = test_teams[test_active]
+                timeline = team.get("timeline", [])
+
+                # Keep the existing starting card and synthesize enough
+                # harmless year-only entries for seven year points.
+                if not timeline:
+                    timeline = [{"year": 1950}]
+
+                while len(timeline) < 8:
+                    timeline.append(
+                        {
+                            "year": 1950 + len(timeline),
+                            "artist": "Teszt",
+                            "title": "Teszt",
+                            "spotify_uri": "",
+                        }
+                    )
+
+                team["timeline"] = timeline[:8]
+                team["year_points"] = 7
+                team["tokens"] = 9
+                test_teams[test_active] = team
+
+                update_shared_game(teams=test_teams)
+                st.rerun(scope="fragment")
+
         host_team_options = {
             "🎧 Csak DJ vagyok": None,
             **{
@@ -1441,11 +1483,15 @@ def render_synced_game():
             ):
                 latest = get_shared_game(st.session_state.game_code)
                 latest_teams = normalized_teams(latest["teams"])
+                latest_active_team_index = latest.get(
+                    "active_team_index",
+                    0,
+                )
                 final_start = latest.get("final_round_start_team")
 
                 status, final_start = finish_game_if_needed(
                     latest_teams,
-                    active_team_index,
+                    latest_active_team_index,
                     final_start,
                 )
 
@@ -1454,10 +1500,16 @@ def render_synced_game():
                         teams=latest_teams,
                         game_status="finished",
                         final_round_start_team=final_start,
+                        current_song=None,
+                        selected_position=None,
+                        revealed=False,
+                        last_result=None,
+                        steal_guesses={},
+                        token_awards=[],
                     )
                 else:
                     next_team_index = (
-                        active_team_index + 1
+                        latest_active_team_index + 1
                     ) % len(latest_teams)
 
                     update_shared_game(
