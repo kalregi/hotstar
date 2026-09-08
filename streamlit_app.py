@@ -927,7 +927,7 @@ def team_tokens(team):
 
 
 def team_score(team):
-    return team_year_points(team) + team_tokens(team) // 3
+    return team_year_points(team)
 
 
 def infer_team_order(team, fallback_index):
@@ -964,6 +964,31 @@ def normalized_teams(teams):
         result.append(item)
 
     return result
+
+
+def auto_convert_tokens_to_year_cards(teams, remaining_songs):
+    """At 6+ tokens, automatically trade 3 tokens for a random year card."""
+    teams_copy = normalized_teams(teams)
+    remaining = list(remaining_songs or [])
+    conversions = []
+
+    for index, team in enumerate(teams_copy):
+        while team_tokens(team) >= 6 and remaining:
+            bonus_song = random.choice(remaining)
+            remaining.remove(bonus_song)
+            team["tokens"] -= 3
+            team["timeline"].append(bonus_song)
+            team["year_points"] += 1
+            conversions.append(
+                {
+                    "team_index": index,
+                    "team_name": team["name"],
+                    "team_emoji": team["emoji"],
+                    "year": bonus_song["year"],
+                }
+            )
+
+    return teams_copy, remaining, conversions
 
 
 def sync_selected_team_identity(teams):
@@ -1421,7 +1446,46 @@ def render_synced_game():
             if st.session_state.selected_position is not None:
                 st.success("✅ Hely kiválasztva")
 
-        # Robbery for non-active teams: costs one token immediately.
+        # Voluntary token exchange: any team may spend 3 tokens for
+        # one random year card. This is useful near the end of the game too.
+        if my_team_index is not None:
+            my_team_for_exchange = teams[my_team_index]
+
+            if team_tokens(my_team_for_exchange) >= 3:
+                if st.button(
+                    "🪙 3 ZSETON → +1 ÉVSZÁMKÁRTYA",
+                    key=f"exchange_tokens_{my_team_index}",
+                    use_container_width=True,
+                ):
+                    latest = get_shared_game(st.session_state.game_code)
+                    latest_teams = normalized_teams(latest["teams"])
+                    latest_remaining = list(
+                        latest.get("remaining_songs") or []
+                    )
+
+                    if (
+                        team_tokens(latest_teams[my_team_index]) >= 3
+                        and latest_remaining
+                    ):
+                        bonus_song = random.choice(latest_remaining)
+                        latest_remaining.remove(bonus_song)
+                        latest_teams[my_team_index]["tokens"] -= 3
+                        latest_teams[my_team_index]["timeline"].append(
+                            bonus_song
+                        )
+                        latest_teams[my_team_index]["year_points"] += 1
+
+                        update_shared_game(
+                            teams=latest_teams,
+                            remaining_songs=latest_remaining,
+                        )
+
+                    st.rerun(scope="fragment")
+
+        # Robbery for non-active teams.
+        # The guess can be changed or cancelled until reveal.
+        # The token is charged only at reveal, and only for a valid steal
+        # (a position different from the active team's final position).
         if (
             len(teams) > 1
             and my_team_index is not None
@@ -1430,15 +1494,15 @@ def render_synced_game():
             my_team = teams[my_team_index]
             steals = game.get("steal_guesses") or {}
             my_key = str(my_team_index)
+            my_steal_position = steals.get(my_key)
 
-            if my_key in steals:
-                st.info("🪙 Rablási tipped leadva. A zseton elköltve.")
-            elif team_tokens(my_team) > 0:
-                with st.expander("🪙 RABLÁS — 1 zseton"):
+            if team_tokens(my_team) > 0 or my_steal_position is not None:
+                with st.expander("🪙 RABLÁS — 1 zseton", expanded=my_steal_position is not None):
                     st.caption(
-                        "Ha szerintetek az aktív csapat rossz helyre tette, "
-                        "1 zsetonért megjelölhetitek a helyes helyet a saját "
-                        "idővonalatokon. A zseton mindenképp elveszik."
+                        "Jelöljétek meg, hová rabolnátok. A tippet a felfedésig "
+                        "bármikor módosíthatjátok vagy visszavonhatjátok. "
+                        "A zsetont csak a felfedéskor vonjuk le, és csak akkor, "
+                        "ha a végső rablási tipp eltér az aktív csapat végső helyétől."
                     )
 
                     steal_reference_timeline = sorted_timeline(
@@ -1459,6 +1523,9 @@ def render_synced_game():
                             right = steal_reference_timeline[position]["year"]
                             label = f"{left} 🎵 {right}"
 
+                        if position == my_steal_position:
+                            label = "✅ " + label
+
                         if st.button(
                             label,
                             key=f"steal_{my_team_index}_{position}",
@@ -1466,16 +1533,20 @@ def render_synced_game():
                         ):
                             latest = get_shared_game(st.session_state.game_code)
                             latest_steals = latest.get("steal_guesses") or {}
-                            latest_teams = normalized_teams(latest["teams"])
+                            latest_steals[my_key] = position
+                            update_shared_game(steal_guesses=latest_steals)
+                            st.rerun(scope="fragment")
 
-                            if str(my_team_index) not in latest_steals:
-                                latest_teams[my_team_index]["tokens"] -= 1
-                                latest_steals[str(my_team_index)] = position
-
-                                update_shared_game(
-                                    teams=latest_teams,
-                                    steal_guesses=latest_steals,
-                                )
+                    if my_steal_position is not None:
+                        if st.button(
+                            "↩️ RABLÁS VISSZAVONÁSA",
+                            key=f"cancel_steal_{my_team_index}",
+                            use_container_width=True,
+                        ):
+                            latest = get_shared_game(st.session_state.game_code)
+                            latest_steals = latest.get("steal_guesses") or {}
+                            latest_steals.pop(my_key, None)
+                            update_shared_game(steal_guesses=latest_steals)
                             st.rerun(scope="fragment")
             else:
                 st.caption("🪙 Rabláshoz legalább 1 zseton kell.")
@@ -1500,27 +1571,55 @@ def render_synced_game():
                         song["year"],
                     )
 
-                    teams_copy = normalized_teams(teams)
+                    # Use the freshest shared state at reveal. This matters
+                    # because both the active team and thieves may change their
+                    # positions until the DJ reveals the song.
+                    latest = get_shared_game(st.session_state.game_code)
+                    teams_copy = normalized_teams(latest["teams"])
+                    final_active_position = latest.get("selected_position")
+                    final_steals = latest.get("steal_guesses") or {}
+
+                    correct = placement_is_correct(
+                        active_timeline,
+                        final_active_position,
+                        song["year"],
+                    )
 
                     if correct:
                         teams_copy[active_team_index]["timeline"].append(song)
                         teams_copy[active_team_index]["year_points"] += 1
 
-                    # Successful steal only if active team was wrong.
-                    if not correct:
-                        for team_key, position in (game.get("steal_guesses") or {}).items():
-                            thief_index = int(team_key)
-                            steal_reference_timeline = sorted_timeline(
-                                active_team["timeline"]
-                            )
+                    steal_reference_timeline = sorted_timeline(
+                        active_team["timeline"]
+                    )
 
-                            if placement_is_correct(
+                    for team_key, position in final_steals.items():
+                        thief_index = int(team_key)
+
+                        # A steal only costs a token if its FINAL position is
+                        # different from the active team's FINAL position.
+                        valid_steal = (
+                            position != final_active_position
+                            and team_tokens(teams_copy[thief_index]) > 0
+                        )
+
+                        if not valid_steal:
+                            continue
+
+                        teams_copy[thief_index]["tokens"] -= 1
+
+                        # The stolen year point is awarded only when the active
+                        # team is wrong and the thief's final placement is right.
+                        if (
+                            not correct
+                            and placement_is_correct(
                                 steal_reference_timeline,
                                 position,
                                 song["year"],
-                            ):
-                                teams_copy[thief_index]["timeline"].append(song)
-                                teams_copy[thief_index]["year_points"] += 1
+                            )
+                        ):
+                            teams_copy[thief_index]["timeline"].append(song)
+                            teams_copy[thief_index]["year_points"] += 1
 
                     update_shared_game(
                         teams=teams_copy,
@@ -1564,10 +1663,70 @@ def render_synced_game():
                 st.success("🪙 Sikeres rablás: " + ", ".join(successful))
 
         if is_host:
+            with st.expander("🛠️ ZSETONKEZELÉS"):
+                st.caption(
+                    "Hibajavításhoz kézzel adhatsz hozzá vagy vonhatsz le "
+                    "zsetont bármelyik csapattól. Ha egy csapat eléri a 6 "
+                    "zsetont, 3 zseton automatikusan beváltódik egy véletlen "
+                    "évszámkártyára."
+                )
+
+                for index, team in enumerate(teams):
+                    current_tokens = team_tokens(team)
+                    st.markdown(
+                        f"**{team['emoji']} {team['name']} — "
+                        f"🪙 {current_tokens} zseton**"
+                    )
+
+                    add_col, remove_col = st.columns(2)
+
+                    with add_col:
+                        if st.button(
+                            "➕ 1 zseton",
+                            key=f"manual_token_add_{index}",
+                            use_container_width=True,
+                        ):
+                            latest = get_shared_game(
+                                st.session_state.game_code
+                            )
+                            latest_teams = normalized_teams(latest["teams"])
+                            latest_teams[index]["tokens"] += 1
+                            latest_teams, latest_remaining, _ = (
+                                auto_convert_tokens_to_year_cards(
+                                    latest_teams,
+                                    latest.get("remaining_songs") or [],
+                                )
+                            )
+                            update_shared_game(
+                                teams=latest_teams,
+                                remaining_songs=latest_remaining,
+                            )
+                            st.rerun(scope="fragment")
+
+                    with remove_col:
+                        if st.button(
+                            "➖ 1 zseton",
+                            key=f"manual_token_remove_{index}",
+                            use_container_width=True,
+                            disabled=current_tokens <= 0,
+                        ):
+                            latest = get_shared_game(
+                                st.session_state.game_code
+                            )
+                            latest_teams = normalized_teams(latest["teams"])
+
+                            if latest_teams[index]["tokens"] > 0:
+                                latest_teams[index]["tokens"] -= 1
+                                update_shared_game(teams=latest_teams)
+
+                            st.rerun(scope="fragment")
+
             st.subheader("🪙 Ki találta el az előadót ÉS a szám címét?")
             st.caption(
                 "A DJ zsetont adhat bármelyik csapatnak. "
-                "3 meglévő zseton = 1 pont."
+                "3 zseton bármikor beváltható egy véletlen évszámkártyára. "
+                "Ha egy csapat eléri a 6 zsetont, 3 automatikusan beváltódik, "
+                "így legfeljebb 5 zseton gyűjthető."
             )
 
             awarded = set(game.get("token_awards") or [])
@@ -1594,8 +1753,16 @@ def render_synced_game():
                         latest_teams[index]["tokens"] += 1
                         latest_awards.add(index)
 
+                        latest_teams, latest_remaining, _ = (
+                            auto_convert_tokens_to_year_cards(
+                                latest_teams,
+                                latest.get("remaining_songs") or [],
+                            )
+                        )
+
                         update_shared_game(
                             teams=latest_teams,
+                            remaining_songs=latest_remaining,
                             token_awards=sorted(latest_awards),
                         )
                     st.rerun(scope="fragment")
