@@ -1,4 +1,3 @@
-import csv
 import random
 from io import BytesIO
 
@@ -7,11 +6,21 @@ import secrets
 import string
 import uuid
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import spotipy
 import streamlit as st
 from spotipy.oauth2 import SpotifyOAuth
 from supabase import create_client
+from spotify_playback import start_game_song, stop_album_continuation
+from host_games import HostGames
+from song_catalog import (
+    available_styles,
+    filter_songs,
+    load_songs,
+    sample_songs,
+    shared_game_settings,
+)
 st.set_page_config(
     page_title="Homemade Hitster",
     page_icon="🎵",
@@ -106,6 +115,12 @@ def update_shared_game(**fields):
 
 
 def apply_shared_game(game):
+    settings = shared_game_settings(game)
+    if settings is not None:
+        st.session_state.decade_counts = settings["decade_counts"]
+        st.session_state.selected_styles = settings["selected_styles"]
+        st.session_state.selected_difficulties = settings.get("selected_difficulties", [])
+        st.session_state.selected_languages = settings.get("selected_languages", [])
     st.session_state.teams = game["teams"]
     st.session_state.remaining_songs = game["remaining_songs"]
     st.session_state.active_team_index = game["active_team_index"]
@@ -123,7 +138,7 @@ def apply_shared_game(game):
 def load_shared_game(game_code):
     game = get_shared_game(game_code)
 
-    if game is None:
+    if game is None or game.get("game_status") == "closed":
         return False
 
     apply_shared_game(game)
@@ -260,6 +275,35 @@ st.markdown(
             font-size: 1.15rem;
             font-weight: 700;
             border-radius: 14px;
+        }
+
+        .st-key-finished_new_game button {
+            background-color: #e5e7eb;
+            color: #4b5563;
+            border-color: #9ca3af;
+        }
+
+        .st-key-finished_new_game button:hover {
+            background-color: #d1d5db;
+            color: #374151;
+            border-color: #6b7280;
+        }
+
+        .st-key-host_next_team button:not(:disabled) {
+            background-color: #15803d;
+            color: white;
+            border-color: #15803d;
+        }
+
+        .st-key-host_next_team button:not(:disabled):hover {
+            background-color: #166534;
+            border-color: #166534;
+            color: white;
+        }
+
+        .st-key-host_next_team button:not(:disabled):focus-visible {
+            outline: 3px solid #86efac;
+            outline-offset: 2px;
         }
 
         div[data-baseweb="select"] {
@@ -416,19 +460,8 @@ except Exception as e:
 # Dalok betöltése
 # -------------------------
 
-with open("songs.csv", encoding="utf-8-sig") as file:
-    reader = csv.DictReader(file)
-
-    SONGS = [
-        {
-            "artist": row["artist"],
-            "title": row["title"],
-            "year": int(row["year"]),
-            "decade": f"{(int(row['year']) // 10) * 10}s",
-            "spotify_uri": row["spotify_uri"],
-        }
-        for row in reader
-    ]
+SONGS = load_songs("songs.csv")
+STYLES = available_styles(SONGS)
 
 
 DECADES = [
@@ -453,11 +486,11 @@ DEFAULT_DECADE_COUNTS = {
     "2020s": 10,
 }
 
-AVAILABLE_BY_DECADE = {
-    decade: sum(1 for song in SONGS if song["decade"] == decade)
-    for decade in DECADES
+DECADE_PRESETS = {
+    "Régebbi": dict(zip(DECADES, [10, 20, 30, 25, 15, 10, 5, 0])),
+    "Alapértelmezett": DEFAULT_DECADE_COUNTS,
+    "Újabb": dict(zip(DECADES, [0, 5, 10, 15, 20, 30, 25, 15])),
 }
-
 
 # -------------------------
 # Csapatszínek
@@ -487,9 +520,7 @@ COLOR_TEAM_NAMES = [
 # -------------------------
 
 def start_song(song):
-    spotify.start_playback(
-        uris=[song["spotify_uri"]]
-    )
+    st.session_state.spotify_playback_guard = start_game_song(spotify, song)
 
 
 def sorted_timeline(timeline):
@@ -515,27 +546,21 @@ def placement_is_correct(timeline, position, year):
     return True
 
 
-def start_new_game(number_of_teams, decade_counts):
-    selected_songs = []
+def clamp_decade_selection(slider_key, available):
+    st.session_state[slider_key] = min(
+        max(st.session_state[slider_key], 0), available
+    )
 
-    for decade in DECADES:
-        wanted = decade_counts.get(decade, 0)
 
-        decade_songs = [
-            song
-            for song in SONGS
-            if song["decade"] == decade
-        ]
-
-        if wanted > 0:
-            selected_songs.extend(
-                random.sample(
-                    decade_songs,
-                    k=wanted,
-                )
-            )
-
-    random.shuffle(selected_songs)
+def start_new_game(number_of_teams, decade_counts, selected_styles=(), selected_difficulties=(), selected_languages=(), all_decades=False):
+    try:
+        selected_songs = sample_songs(
+            SONGS, decade_counts, selected_styles, selected_difficulties, selected_languages,
+            all_decades=all_decades,
+        )
+    except ValueError as error:
+        st.error(str(error))
+        return False
 
     if len(selected_songs) < number_of_teams:
         st.error(
@@ -573,6 +598,13 @@ def start_new_game(number_of_teams, decade_counts):
             }
         )
 
+    teams[0]["game_settings"] = {
+        "decade_counts": dict(decade_counts),
+        "selected_styles": list(selected_styles),
+        "selected_difficulties": list(selected_difficulties),
+        "selected_languages": list(selected_languages),
+        "all_decades": all_decades,
+    }
     st.session_state.teams = teams
     st.session_state.remaining_songs = remaining
     st.session_state.active_team_index = 0
@@ -582,6 +614,9 @@ def start_new_game(number_of_teams, decade_counts):
     st.session_state.last_result = None
     st.session_state.game_started = True
     st.session_state.decade_counts = decade_counts
+    st.session_state.selected_styles = list(selected_styles)
+    st.session_state.selected_difficulties = list(selected_difficulties)
+    st.session_state.selected_languages = list(selected_languages)
 
     return True
 
@@ -596,6 +631,10 @@ def reset_game():
         "revealed",
         "last_result",
         "decade_counts",
+        "selected_styles",
+        "selected_difficulties",
+        "selected_languages",
+        "spotify_playback_guard",
         "game_code",
         "is_host",
         "selected_team_index",
@@ -673,16 +712,84 @@ if not st.session_state.game_started:
             except Exception:
                 pass
 
+def render_host_games():
+    st.header("🎧 Folyamatban lévő játékok")
+    st.caption(
+        "Elveszett a játékkód? Host jelszóval megkeresheted a játékot, "
+        "visszacsatlakozhatsz DJ-ként, vagy lezárhatod."
+    )
+    manager = HostGames(supabase, st.secrets.get("HOST_PASSWORD", ""))
+    password = st.text_input("Host jelszó a játékok kezeléséhez", type="password", key="manage_host_password")
+    if st.button("🔎 JÁTÉKOK MEGJELENÍTÉSE / FRISSÍTÉS", key="manage_games_refresh", use_container_width=True):
+        st.session_state.host_games_open = manager.authorized(password)
+        if not st.session_state.host_games_open:
+            st.error("Hibás host jelszó.")
+    if not st.session_state.get("host_games_open", False) or not manager.authorized(password):
+        return
+    notice = st.session_state.pop("host_games_notice", None)
+    if notice:
+        st.success(notice)
+    try:
+        games = manager.list_active(password)
+    except Exception:
+        st.error("Nem sikerült lekérni a játékokat. Próbáld a frissítés gombot.")
+        return
+    if not games:
+        st.info("Nincs folyamatban lévő játék.")
+        return
+    for game in games:
+        code = game["game_code"]
+        with st.container(border=True):
+            st.subheader(f"🎮 {code}")
+            teams = game.get("teams") or []
+            st.write(" · ".join(
+                f"{team.get('name', 'Csapat')}: "
+                f"{team.get('year_points', max(0, len(team.get('timeline', [])) - 1))} pont"
+                for team in teams
+            ))
+            status = "Utolsó kör" if game["game_status"] == "final_round" else "Folyamatban"
+            seen = parse_utc(game.get("host_last_seen"))
+            last_seen = seen.astimezone(ZoneInfo("Europe/Budapest")).strftime("%Y.%m.%d. %H:%M") if seen else "nincs adat"
+            st.caption(f"{status} · {game.get('number_of_teams', len(teams))} csapat · DJ utolsó kapcsolata: {last_seen}")
+            if host_is_alive(game):
+                st.caption("A DJ jelenleg aktív; a visszacsatlakozással átveszed a szerepét.")
+            resume_column, close_column = st.columns([2, 1])
+            if resume_column.button("🎧 FOLYTATÁS DJ-KÉNT", key=f"manage_resume_{code}", use_container_width=True):
+                try:
+                    restored = manager.resume(password, code, st.session_state.device_id)
+                    apply_shared_game(restored)
+                    st.session_state.game_code = code
+                    st.session_state.host_authenticated = True
+                    st.session_state.is_host = True
+                    st.session_state.pop("selected_team_index", None)
+                    st.session_state.pop("selected_team_id", None)
+                except Exception:
+                    st.error("Nem sikerült visszacsatlakozni. Frissítsd a listát.")
+                else:
+                    st.rerun()
+            with close_column.popover("Lezárás", use_container_width=True):
+                st.write(f"Lezárod a(z) {code} játékot? A játékosok nem tudják tovább folytatni.")
+                if st.button("JÁTÉK LEZÁRÁSA", key=f"manage_close_{code}", use_container_width=True):
+                    try:
+                        manager.close(password, code)
+                    except Exception:
+                        st.error("Nem sikerült lezárni. Frissítsd a listát.")
+                    else:
+                        st.session_state.host_games_notice = f"A(z) {code} játékot lezártad."
+                        st.rerun()
+
+
 if not st.session_state.game_started:
-    create_tab, join_tab = st.tabs(
-        ["🎮 ÚJ JÁTÉK", "📱 CSATLAKOZÁS"]
+    create_tab, join_tab, host_tab = st.tabs(
+        ["🎮 ÚJ JÁTÉK", "📱 CSATLAKOZÁS", "🎧 HOST / JÁTÉKOK"]
     )
 
     with create_tab:
         st.header("🎮 Új játék")
 
         st.write(
-            "Válasszátok ki a csapatok számát és azt, "
+            "Válasszátok ki a csapatok számát, a stílusokat, "
+            "a nehézséget, a nyelvet és azt, "
             "hány dalt szeretnétek az egyes évtizedekből."
         )
 
@@ -708,29 +815,156 @@ if not st.session_state.game_started:
                 "🤝 Kooperatív mód: mindenki ugyanazért az egy csapatért játszik."
             )
 
+        with st.expander("🎛️ Stílus, nehézség és nyelv", expanded=False):
+            selected_styles = st.multiselect(
+                "🎸 Zenei stílusok",
+                options=STYLES,
+                key="setup_style_groups",
+                placeholder="Minden stílus",
+                help=(
+                    "Ha üresen hagyod, minden dalból válogatunk. Több stílusnál "
+                    "elég, ha a dal az egyikhez tartozik. A Pop / Rock dal a Pop "
+                    "és a Rock / Alternative csoportban is szerepelhet. "
+                    "A Rock & Roll, New Wave és Blues a Rock / Alternative része. "
+                    "Az Egyéb például Folk, Country, Latin és Reggae dalokat tartalmaz."
+                    " A Karácsonyi slágerek az ünnepi válogatást jelenti."
+                ),
+            )
+            selected_difficulties = st.multiselect(
+                "🎯 Nehézség",
+                options=[1, 2, 3],
+                format_func=lambda level: {
+                    1: "1 – Könnyű", 2: "2 – Közepes", 3: "3 – Nehéz"
+                }[level],
+                key="setup_difficulties",
+                placeholder="Minden nehézség",
+                help=(
+                    "Üresen hagyva minden nehézségből válogatunk. "
+                    "Egy vagy több szint is választható. A szintek a dal "
+                    "becsült ismertségét jelölik: 1 a legismertebb, 3 a kevésbé ismert."
+                ),
+            )
+            selected_languages = st.multiselect(
+                "🌍 Nyelv / dalkör",
+                options=["hu", "international"],
+                format_func=lambda language: {
+                    "hu": "Magyar", "international": "Nemzetközi"
+                }[language],
+                key="setup_languages",
+                placeholder="Magyar és nemzetközi",
+                help=(
+                    "Üresen hagyva mindkét dalkörből válogatunk. "
+                    "A nemzetközi kategória minden nem magyar nyelvet együtt kezel; "
+                    "a katalógus nem tartalmaz részletes nyelvi besorolást."
+                ),
+            )
+            filtered_songs = filter_songs(
+                SONGS, selected_styles, selected_difficulties, selected_languages
+            )
+            st.caption(f"A választott szűrőkkel {len(filtered_songs)} dal érhető el.")
+
         st.subheader("🎶 Dalok évtizedenként")
 
-        st.caption(
-            "A megadott mennyiséget minden új játék elején "
-            "véletlenszerűen választja ki a teljes dalkészletből."
-        )
+        available_by_decade = {
+            decade: sum(song["decade"] == decade for song in filtered_songs)
+            for decade in DECADES
+        }
+        common_slider_max = max(1, max(available_by_decade.values(), default=0))
+        preset_columns = st.columns(4)
+        for column, (preset_name, preset_counts) in zip(
+            preset_columns[:3], DECADE_PRESETS.items()
+        ):
+            if column.button(
+                preset_name,
+                key=f"decade_preset_{preset_name}",
+                use_container_width=True,
+            ):
+                st.session_state.setup_all_decades = False
+                for decade in DECADES:
+                    st.session_state[f"decade_count_{decade}"] = min(
+                        preset_counts[decade], available_by_decade[decade]
+                    )
 
-        decade_counts = {}
+        if preset_columns[3].button(
+            "Összes", key="decade_preset_Összes", use_container_width=True,
+        ):
+            st.session_state.setup_all_decades = True
 
-        for decade in DECADES:
-            available = AVAILABLE_BY_DECADE[decade]
-
-            decade_counts[decade] = st.slider(
-                f"{decade} — elérhető: {available}",
-                min_value=0,
-                max_value=available,
-                value=min(
-                    DEFAULT_DECADE_COUNTS[decade],
-                    available,
-                ),
-                step=1,
-                key=f"decade_count_{decade}",
+        all_decades = st.session_state.get("setup_all_decades", False)
+        if all_decades:
+            st.caption(
+                "Összes: minden, a szűrőknek megfelelő dal bekerül, "
+                "véletlen sorrendben, évtizedes kvóták nélkül. "
+                "Kézi eloszláshoz válassz másik beállítást."
             )
+
+        with st.expander("📊 Részletes évtizedes eloszlás", expanded=False):
+            st.caption(
+                "A Régebbi és az Alapértelmezett 115, az Újabb 120 dalt céloz. "
+                "Ha egy évtizedből kevesebb "
+                "érhető el, annak darabszámát csökkentjük. A csúszkákkal "
+                "ezután szabadon módosíthatod az eloszlást."
+            )
+            st.caption(
+                f"Közös skála: 0–{common_slider_max} dal. "
+                "A szürke, sávozott szakasz az adott évtizedben nem elérhető mennyiség."
+            )
+
+            decade_counts = {}
+
+            for decade in DECADES:
+                available = available_by_decade[decade]
+                slider_key = f"decade_count_{decade}"
+                # Preserve the user's counts, clamping them when the pool shrinks.
+                current_count = st.session_state.get(
+                    slider_key, DEFAULT_DECADE_COUNTS[decade]
+                )
+                if all_decades:
+                    current_count = available
+                st.session_state[slider_key] = min(max(current_count, 0), available)
+
+                limit_percent = available / common_slider_max * 100
+                # Overlay only the unavailable part of Streamlit's slider track;
+                # keep the native selected fill, thumb, and keyboard interaction.
+                st.html(
+                    f"""
+                    <style>
+                    .st-key-decade_slider_{decade} [data-testid="stSlider"]
+                    [role="group"] > div[data-orientation="horizontal"]::after {{
+                        content: "";
+                        position: absolute;
+                        left: {limit_percent:.6f}%;
+                        right: 0;
+                        top: 50%;
+                        height: 4px;
+                        transform: translateY(-50%);
+                        background: repeating-linear-gradient(
+                            135deg, #9ca3af 0px, #9ca3af 3px,
+                            #6b7280 3px, #6b7280 6px
+                        );
+                        pointer-events: none;
+                        border-radius: 2px;
+                    }}
+                    </style>
+                    """
+                )
+                with st.container(key=f"decade_slider_{decade}"):
+                    decade_counts[decade] = st.slider(
+                        f"{decade} — elérhető: {available}",
+                        min_value=0,
+                        max_value=common_slider_max,
+                        step=1,
+                        key=slider_key,
+                        disabled=available == 0 or all_decades,
+                        on_change=clamp_decade_selection,
+                        args=(slider_key, available),
+                        help=(
+                            f"Ebből az évtizedből legfeljebb {available} dal választható. "
+                            "A szürke szakaszra húzott érték a kínálat határára áll vissza."
+                        ),
+                    )
+                    if available == 0:
+                        st.caption(f"{decade} — nincs dal a választott szűrőkkel.")
 
         total_selected = sum(decade_counts.values())
 
@@ -739,10 +973,14 @@ if not st.session_state.game_started:
             f"Ebből {number_of_teams} lesz kezdőkártya."
         )
 
+        if total_selected < number_of_teams:
+            st.warning("Legalább annyi dalt válassz, ahány csapat játszik.")
+
         if st.button(
             "🎮 JÁTÉK LÉTREHOZÁSA",
             use_container_width=True,
             type="primary",
+            disabled=total_selected < number_of_teams,
         ):
             expected_password = st.secrets.get("HOST_PASSWORD", "")
 
@@ -759,6 +997,10 @@ if not st.session_state.game_started:
                 started = start_new_game(
                     number_of_teams,
                     decade_counts,
+                    selected_styles,
+                    selected_difficulties,
+                    selected_languages,
+                    all_decades=all_decades,
                 )
 
                 if started:
@@ -870,6 +1112,9 @@ if not st.session_state.game_started:
                             "Nem sikerült DJ-ként visszacsatlakozni."
                         )
                         st.exception(e)
+
+    with host_tab:
+        render_host_games()
 
     st.stop()
 
@@ -1039,24 +1284,27 @@ def start_rematch(game):
             ) % team_count,
         )
 
-    decade_counts = st.session_state.get(
-        "decade_counts",
-        DEFAULT_DECADE_COUNTS,
-    )
-    selected_songs = []
-
-    for decade in DECADES:
-        wanted = decade_counts.get(decade, 0)
-        decade_songs = [
-            song for song in SONGS
-            if song["decade"] == decade
-        ]
-        if wanted > 0:
-            selected_songs.extend(
-                random.sample(decade_songs, k=wanted)
-            )
-
-    random.shuffle(selected_songs)
+    settings = shared_game_settings(game)
+    if settings is None:
+        # Games created before style selection retain their previous defaults.
+        settings = {
+            "decade_counts": st.session_state.get(
+                "decade_counts", DEFAULT_DECADE_COUNTS
+            ),
+            "selected_styles": st.session_state.get("selected_styles", []),
+            "selected_difficulties": st.session_state.get("selected_difficulties", []),
+            "selected_languages": st.session_state.get("selected_languages", []),
+        }
+    try:
+        selected_songs = sample_songs(
+            SONGS, settings["decade_counts"], settings["selected_styles"],
+            settings.get("selected_difficulties", []),
+            settings.get("selected_languages", []),
+            all_decades=settings.get("all_decades", False),
+        )
+    except ValueError as error:
+        st.error(str(error))
+        return False
 
     if len(selected_songs) < len(shifted_teams):
         st.error("Nincs elég dal a visszavágóhoz.")
@@ -1144,6 +1392,13 @@ def render_synced_game():
         st.error("A játék már nem található.")
         return
 
+    if game.get("game_status") == "closed":
+        st.warning("Ezt a játékot a host lezárta.")
+        if st.button("Vissza a kezdőképernyőre", key="closed_game_home", use_container_width=True):
+            reset_game()
+            st.rerun()
+        return
+
     teams = normalized_teams(st.session_state.teams)
     sync_selected_team_identity(teams)
 
@@ -1157,6 +1412,16 @@ def render_synced_game():
         and current_host_id == my_device_id
     )
     st.session_state.is_host = is_host
+
+    if is_host:
+        try:
+            st.session_state.spotify_playback_guard = stop_album_continuation(
+                spotify, st.session_state.get("spotify_playback_guard")
+            )
+        except Exception:
+            # Avoid repeated API calls if checking the ended song fails.
+            st.session_state.pop("spotify_playback_guard", None)
+            st.warning("A dal végi automatikus leállítást nem sikerült ellenőrizni.")
 
     st.info(f"📱 Játékkód: **{st.session_state.game_code}**")
 
@@ -1839,16 +2104,7 @@ def render_synced_game():
 
     st.divider()
 
-    if is_host:
-        if st.button(
-            "🔄 ÚJ JÁTÉK",
-            use_container_width=True,
-            key="host_reset_game",
-        ):
-            update_shared_game(game_status="finished")
-            reset_game()
-            st.rerun()
-    else:
+    if not is_host:
         if st.button(
             "🚪 KILÉPÉS A JÁTÉKBÓL",
             use_container_width=True,
